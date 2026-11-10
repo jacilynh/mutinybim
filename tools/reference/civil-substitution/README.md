@@ -8,7 +8,7 @@ Run from the repository root.
 node tools/reference/civil-substitution/server.mjs
 ```
 
-Open http://127.0.0.1:3200. Set `CIVIL_SUBSTITUTION_PORT` to change the port.
+Open http://127.0.0.1:3201. Set `CIVIL_SUBSTITUTION_PORT` to change the port.
 Restart the process to reset the in-memory demo.
 
 1. As Contractor, create a submittal and propose ECC-FC600-S.
@@ -19,7 +19,8 @@ Restart the process to reset the in-memory demo.
 4. After Revise and resubmit, switch to Contractor. Edit the gasket response and
    send submission 2 with the bundled synthetic load-rating document.
 5. Switch to Civil reviewer. Compare the new evidence with submission 1 and
-   record a decision for submission 2. Owner can see both decisions.
+   assess each checklist item with a status and note, then record a decision
+   for submission 2. Contractor and Owner can read the assessments and decisions.
 
 The server builds the accepted fixture with the catalog pilot in a temporary
 directory. The substitution script replaces the isolated cover instance with

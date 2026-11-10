@@ -52,6 +52,15 @@ test("MH1 substitution stays on the contractor copy and review cites its exact d
     assert.match(revised.submission.evidence.document.text, /ECC-FC600-S/);
     assert.equal(revised.review.current, false);
     assert.equal((await workflow.review("engineer", revised.delta.digest, "revise_and_resubmit", reason, proposed.submission.digest)).type, "request_refused");
+    const note = "Project gasket requirement still needs confirmation.";
+    await assert.rejects(workflow.assessRequirement("contractor", revised.submission.digest, "gasket", "resolved", note), /Only the civil reviewer/);
+    await assert.rejects(workflow.assessRequirement("engineer", proposed.submission.digest, "gasket", "resolved", note), /current submission/);
+    await workflow.assessRequirement("engineer", revised.submission.digest, "gasket", "needs_clarification", note);
+    await workflow.assessRequirement("engineer", revised.submission.digest, "load", "still_missing", "Service classification not stated.");
+    const assessed = await workflow.state("owner");
+    assert.deepEqual(assessed.checklist.map((item) => item.assessment.status), ["needs_clarification", "still_missing"]);
+    assert.equal(assessed.checklist[0].assessment.note, note);
+    assert.equal(assessed.review.current, false);
     // Even the same reviewer, outcome and reason are a separate act on the new evidence.
     assert.equal((await workflow.review("engineer", revised.delta.digest, "revise_and_resubmit", reason, revised.submission.digest)).type, "lineage_act_recorded");
     const final = await workflow.state("owner");

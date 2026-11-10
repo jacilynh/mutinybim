@@ -48,6 +48,11 @@ export async function createWorkflow() {
   let submittal = null;
   let evidence = null;
   const reviews = [];
+  const requirements = [
+    { id: "gasket", label: "Confirm whether the project requires a gasket" },
+    { id: "load", label: "Provide the applicable service load classification" },
+  ];
+  const assessments = new Map();
   const loadRating = await readFile(path.join(here, "load-rating.txt"), "utf8");
   const submissionFor = (deltaDigest) => {
     const revision = evidence ? 2 : 1;
@@ -132,6 +137,10 @@ export async function createWorkflow() {
     const lastReview = reviews.at(-1);
     return {
       submission,
+      checklist: submission?.evidence ? requirements.map((item) => ({
+        ...item,
+        assessment: assessments.get(submission.digest)?.get(item.id) ?? null,
+      })) : [],
       reviews: [...reviews],
       accepted: summary(main), proposal: proposal ? summary(proposal) : null,
       copy: submittal ? { id: submittal.id, name: submittal.name, role: submittal.role, parentRevision: submittal.parent.revision } : null,
@@ -190,6 +199,28 @@ export async function createWorkflow() {
     return { message: "Submission 2 sent for review with the load-rating document and gasket response." };
   }
 
+  async function assessRequirement(role, submissionDigest, itemId, status, note) {
+    if (role !== "engineer") throw new Error("Only the civil reviewer can assess requirements");
+    if (!requirements.some((item) => item.id === itemId)) throw new Error("Choose a checklist item");
+    if (!["resolved", "needs_clarification", "still_missing"].includes(status)) {
+      throw new Error("Choose a checklist status");
+    }
+    if (typeof note !== "string" || !note.trim() || note.length > 500) {
+      throw new Error("Enter a review note of up to 500 characters");
+    }
+    const delta = result(await deltaFor(role), "lineage_delta_result");
+    const submission = submissionFor(delta.deltaDigest);
+    if (!submission.evidence || submission.digest !== submissionDigest) {
+      throw new Error("Refresh and review the current submission before assessing a requirement.");
+    }
+    const items = assessments.get(submissionDigest) ?? new Map();
+    items.set(itemId, {
+      status, note: note.trim(), submissionDigest, reviewer: identities[role].name,
+    });
+    assessments.set(submissionDigest, items);
+    return { message: "Checklist assessment saved for submission 2." };
+  }
+
   async function review(role, deltaDigest, outcome, reason, submissionDigest) {
     if (!["revise_and_resubmit", "rejected"].includes(outcome)) throw new Error("Choose a review decision");
     if (typeof reason !== "string" || !reason.trim() || reason.length > 500) throw new Error("Enter a review reason of up to 500 characters");
@@ -226,5 +257,5 @@ export async function createWorkflow() {
     try { return await s.edit({ type: "set_parameters", id: "MH1-COVER", scope: "instance", mark: "MH1-COVER-EDIT" }); }
     finally { s.close(); }
   }
-  return { state, loadRatingDocument: () => loadRating, createSubmittal, propose, resubmit, review, attemptDesignEdit, close() { for (const client of clients) client.dispose(); clients.clear(); } };
+  return { state, loadRatingDocument: () => loadRating, createSubmittal, propose, resubmit, assessRequirement, review, attemptDesignEdit, close() { for (const client of clients) client.dispose(); clients.clear(); } };
 }

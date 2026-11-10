@@ -23,7 +23,19 @@ interface Review {
   submissionRevision: number;
   evidence: Evidence | null;
 }
+const statuses = {
+  resolved: "Resolved",
+  needs_clarification: "Needs clarification",
+  still_missing: "Still missing",
+};
+type RequirementStatus = keyof typeof statuses;
+interface ChecklistItem {
+  id: string;
+  label: string;
+  assessment: { status: RequirementStatus; note: string; reviewer: string } | null;
+}
 interface State {
+  checklist: ChecklistItem[];
   submission: { revision: number; digest: string; evidence: Evidence | null } | null;
   reviews: Review[];
   accepted: Schedule;
@@ -36,6 +48,42 @@ const decisions = {
   revise_and_resubmit: "Revise and resubmit",
   rejected: "Reject substitution",
 };
+
+function Requirement({ item, evidence, editable, busy, save }: {
+  item: ChecklistItem;
+  evidence: Evidence;
+  editable: boolean;
+  busy: boolean;
+  save: (status: RequirementStatus, note: string) => void;
+}) {
+  const [status, setStatus] = useState<RequirementStatus>(item.assessment?.status ?? "needs_clarification");
+  const [note, setNote] = useState(item.assessment?.note ?? "");
+  return (
+    <Card>
+      <CardTitle>{item.label}</CardTitle>
+      <p>{item.id === "gasket" ? evidence.gasketResponse : (
+        <><a href={evidence.document.href} download>{evidence.document.title}</a> reports a synthetic proof load. The service load classification is unspecified.</>
+      )}</p>
+      <p><strong>{item.assessment ? statuses[item.assessment.status] : "Awaiting assessment"}</strong>{item.assessment && ` · ${item.assessment.reviewer}`}</p>
+      {item.assessment && <p>{item.assessment.note}</p>}
+      {editable && (
+        <>
+          <Field>
+            <Label htmlFor={`status-${item.id}`}>Status</Label>
+            <NativeSelect id={`status-${item.id}`} value={status} disabled={busy} onChange={(event) => setStatus(event.target.value as RequirementStatus)}>
+              {Object.entries(statuses).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </NativeSelect>
+          </Field>
+          <Field>
+            <Label htmlFor={`note-${item.id}`}>Review note</Label>
+            <Textarea id={`note-${item.id}`} value={note} maxLength={500} disabled={busy} onChange={(event) => setNote(event.target.value)} />
+          </Field>
+          <Button disabled={busy || !note.trim()} onClick={() => save(status, note)}>Save assessment</Button>
+        </>
+      )}
+    </Card>
+  );
+}
 
 function Demo() {
   const [role, setRole] = useState<Role>("contractor");
@@ -57,7 +105,7 @@ function Demo() {
     void load(role).catch((problem: Error) => setError(problem.message));
   }, [role]);
 
-  async function act(action: string) {
+  async function act(action: string, details: Record<string, string> = {}) {
     setBusy(true);
     setError("");
     setMessage("");
@@ -65,7 +113,7 @@ function Demo() {
       const response = await fetch("/api/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role, action, outcome, reason, gasketResponse, digest: state?.delta?.digest, submissionDigest: state?.submission?.digest }),
+        body: JSON.stringify({ role, action, outcome, reason, gasketResponse, digest: state?.delta?.digest, submissionDigest: state?.submission?.digest, ...details }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
@@ -158,6 +206,16 @@ function Demo() {
           <p>Submission 1 had no supplemental evidence. Submission 2 adds the document and response below. The proposed part is ECC-FC600-S in both submissions.</p>
           <p><a href={submission.evidence.document.href} download>{submission.evidence.document.title} · Download synthetic load-rating document</a></p>
           <p><strong>Gasket response</strong> · {submission.evidence.gasketResponse}</p>
+        </Card>
+      )}
+      {submission?.evidence && state && (
+        <Card>
+          <CardTitle>Submission 2 requirements checklist</CardTitle>
+          {state.checklist.map((item) => (
+            <Requirement key={`${submission.digest}-${item.id}`} item={item} evidence={submission.evidence!}
+              editable={role === "engineer"} busy={busy}
+              save={(status, note) => void act("assess", { itemId: item.id, status, note })} />
+          ))}
         </Card>
       )}
       {hasChange && (
