@@ -1,0 +1,21 @@
+body { margin: 0; background: var(--mutiny-background); color: var(--mutiny-text); font-family: var(--mutiny-font-body); }
+.explorer { max-width: 1450px; margin: auto; padding: 30px; display: grid; gap: 22px; }
+header, .title-row { display: flex; justify-content: space-between; align-items: center; gap: 18px; }
+h1 { font-family: var(--mutiny-font-heading); font-size: 40px; font-weight: var(--mutiny-heading-weight); margin: 0; }
+h3 { font-weight: var(--mutiny-heading-weight); }
+.eyebrow, .muted, dt { color: var(--mutiny-muted); }
+.eyebrow { margin-bottom: 6px; }
+.workspace { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(340px, 1fr); gap: 22px; align-items: start; }
+aside { display: grid; gap: 22px; }
+.choices { display: flex; flex-wrap: wrap; gap: 8px; }
+svg { width: 100%; background: var(--mutiny-canvas); border-radius: var(--mutiny-radius); }
+svg text { fill: var(--mutiny-text); font-family: var(--mutiny-font-body); font-size: 13px; }
+.catchment { fill: var(--mutiny-subtle); stroke: var(--mutiny-border); stroke-width: 2; stroke-dasharray: 5 4; }
+.pipe { stroke: var(--mutiny-muted); stroke-width: 3; }
+.structure { fill: var(--mutiny-panel); stroke: var(--mutiny-muted); stroke-width: 2; }
+.arrow { fill: var(--mutiny-muted); }
+.active .pipe, .active .structure, .active .catchment { stroke: var(--mutiny-selection); stroke-width: 4; }
+.active .catchment { fill: var(--mutiny-accent-subtle); }
+dl { display: grid; gap: 5px; }
+dd { margin: 0 0 10px; font-weight: var(--mutiny-heading-weight); }
+@media (max-width: 850px) { .workspace { grid-template-columns: 1fr; } header { align-items: start; flex-wrap: wrap; } .explorer { padding: 16px; } }
