@@ -7,7 +7,7 @@ register();
 const { createWorkflow } = await import("./workflow.mjs");
 const { buildEditorDemo } = await import("../../../packages/bim-editor/demo/build.ts");
 const here = path.dirname(fileURLToPath(import.meta.url));
-const outDir = path.resolve(here, "../../../mutinybim-examples/civil-substitution/dist");
+const outDir = path.resolve(here, "../../../mutinybim-examples/civil-substitution-resubmit/dist");
 const workflow = await createWorkflow();
 let pending = Promise.resolve();
 await buildEditorDemo({ entry: path.join(here, "app.tsx"), outDir });
@@ -29,9 +29,10 @@ const server = createServer(async (req, res) => {
           case "create": result = await workflow.createSubmittal(input.role); break;
           case "propose": result = await workflow.propose(input.role); break;
           case "attempt-design-edit": result = await workflow.attemptDesignEdit(input.role); break;
+          case "resubmit": result = await workflow.resubmit(input.role, input.submissionDigest, input.gasketResponse); break;
           case "review":
             if (typeof input.digest !== "string" || !/^[0-9a-f]{64}$/.test(input.digest)) throw new Error("Refresh the proposal before reviewing");
-            result = await workflow.review(input.role, input.digest, input.outcome, input.reason); break;
+            result = await workflow.review(input.role, input.digest, input.outcome, input.reason, input.submissionDigest); break;
           default: throw new Error("Unknown demonstration action");
         }
         const message = result.type === "lineage_act_recorded" ? "Review recorded against the displayed proposal."
@@ -43,6 +44,11 @@ const server = createServer(async (req, res) => {
       res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(await next)); return;
     }
     if (req.method !== "GET") { res.writeHead(405).end(); return; }
+    if (url.pathname === "/load-rating.txt") {
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end(workflow.loadRatingDocument());
+      return;
+    }
     if (url.pathname === "/api/state") { await pending; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(await workflow.state(url.searchParams.get("role") ?? "owner"))); return; }
     if (url.pathname === "/") { res.setHeader("Content-Type", "text/html"); res.end('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MutinyBIM contractor substitution</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script type="module" src="/app.js"></script></body></html>'); return; }
     const file = path.resolve(outDir, `.${decodeURIComponent(url.pathname)}`);
@@ -51,6 +57,6 @@ const server = createServer(async (req, res) => {
     res.end(await readFile(file));
   } catch (error) { if (!res.headersSent) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) })); } }
 });
-const port = Number(process.env.CIVIL_SUBSTITUTION_PORT ?? 3199);
+const port = Number(process.env.CIVIL_SUBSTITUTION_PORT ?? 3200);
 server.listen(port, "127.0.0.1", () => console.log(`Civil substitution: http://127.0.0.1:${server.address().port}`));
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { workflow.close(); server.close(); });

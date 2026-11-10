@@ -12,12 +12,25 @@ interface Schedule {
   revision: number;
   fields: { id: string; label: string; value: string }[];
 }
+interface Evidence {
+  document: { title: string; href: string };
+  gasketResponse: string;
+}
+interface Review {
+  outcome: Decision;
+  reason: string;
+  reviewer: string;
+  submissionRevision: number;
+  evidence: Evidence | null;
+}
 interface State {
+  submission: { revision: number; digest: string; evidence: Evidence | null } | null;
+  reviews: Review[];
   accepted: Schedule;
   proposal: Schedule | null;
   copy: { parentRevision: number } | null;
   delta: { digest: string; changedIds: string[] } | null;
-  review: { outcome: Decision; reason: string; reviewer: string; current: boolean } | null;
+  review: (Review & { current: boolean }) | null;
 }
 const decisions = {
   revise_and_resubmit: "Revise and resubmit",
@@ -29,6 +42,7 @@ function Demo() {
   const [state, setState] = useState<State | null>(null);
   const [outcome, setOutcome] = useState<Decision>("revise_and_resubmit");
   const [reason, setReason] = useState("");
+  const [gasketResponse, setGasketResponse] = useState("ECC-FC600-S has no gasket option. Please confirm whether the project requires a gasket.");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -51,11 +65,12 @@ function Demo() {
       const response = await fetch("/api/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role, action, outcome, reason, digest: state?.delta?.digest }),
+        body: JSON.stringify({ role, action, outcome, reason, gasketResponse, digest: state?.delta?.digest, submissionDigest: state?.submission?.digest }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
       setMessage(body.message);
+      if (action === "review" && body.result?.type === "lineage_act_recorded") setReason("");
       await load(role);
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : String(problem));
@@ -65,6 +80,10 @@ function Demo() {
   }
 
   const hasChange = Boolean(state?.delta?.changedIds.length);
+  const submission = state?.submission;
+  const firstReview = state?.reviews[0];
+  const canResubmit = role === "contractor" && submission?.revision === 1
+    && state?.review?.current && state.review.outcome === "revise_and_resubmit";
   const proposalFields = new Map(state?.proposal?.fields.map(({ id, value }) => [id, value]));
   return (
     <main className="review-demo">
@@ -121,10 +140,37 @@ function Demo() {
           {hasChange && <p>The proposed variant removes the gasket option. Scheduled dimensions match. The source leaves the load rating unspecified for both variants.</p>}
         </Card>
       )}
+      {canResubmit && (
+        <Card>
+          <CardTitle>Respond to the review</CardTitle>
+          <p>{state.review?.reason}</p>
+          <p>Synthetic load-rating document ECC-LR-FC600-S · Rev A</p>
+          <Field>
+            <Label htmlFor="gasket-response">Gasket response</Label>
+            <Textarea id="gasket-response" value={gasketResponse} maxLength={500} disabled={busy} onChange={(event) => setGasketResponse(event.target.value)} />
+          </Field>
+          <Button disabled={busy || !gasketResponse.trim()} onClick={() => void act("resubmit")}>Send submission 2</Button>
+        </Card>
+      )}
+      {submission?.evidence && (
+        <Card>
+          <CardTitle>Changes since the first review</CardTitle>
+          <p>Submission 1 had no supplemental evidence. Submission 2 adds the document and response below. The proposed part is ECC-FC600-S in both submissions.</p>
+          <p><a href={submission.evidence.document.href} download>{submission.evidence.document.title} · Download synthetic load-rating document</a></p>
+          <p><strong>Gasket response</strong> · {submission.evidence.gasketResponse}</p>
+        </Card>
+      )}
       {hasChange && (
         <Card>
-          <CardTitle>Review decision</CardTitle>
-          {state?.review && <p><strong>{decisions[state.review.outcome]}</strong> · {state.review.reviewer}{state.review.current ? "" : " · Earlier proposal"}. {state.review.reason}</p>}
+          <CardTitle>Review decisions</CardTitle>
+          {state?.reviews.map((review) => (
+            <div key={review.submissionRevision}>
+              <p><strong>Submission {review.submissionRevision} · {decisions[review.outcome]}</strong> · {review.reviewer}</p>
+              <p>{review.reason}</p>
+              <p>{review.evidence ? `Evidence reviewed: ${review.evidence.document.title} and gasket response.` : "Evidence reviewed: original catalog schedule."}</p>
+            </div>
+          ))}
+          {firstReview && submission?.revision === 2 && !state?.review?.current && <p>Submission 2 is awaiting a new decision.</p>}
           {role === "engineer" && !state?.review?.current && (
             <>
               <Field>
@@ -138,7 +184,7 @@ function Demo() {
                 <Label htmlFor="reason">Reason</Label>
                 <Textarea id="reason" value={reason} maxLength={500} disabled={busy} onChange={(event) => setReason(event.target.value)} placeholder="Confirm the gasket requirement and provide the applicable load rating." />
               </Field>
-              <Button disabled={busy || !reason.trim()} onClick={() => void act("review")}>Record decision</Button>
+              <Button disabled={busy || !reason.trim()} onClick={() => void act("review")}>Record decision for submission {submission?.revision}</Button>
             </>
           )}
           {!state?.review && role !== "engineer" && <p>Awaiting a decision from the civil reviewer.</p>}

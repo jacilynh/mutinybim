@@ -1,0 +1,6 @@
+SYNTHETIC LOAD-RATING DOCUMENT
+Document ECC-LR-FC600-S, revision A
+Example Civil Castings (fictional)
+Assembly ECC-FC600-S · Frame F600-100 · Cover C600-S
+Reported proof load: 100 kN (fictional demonstration value)
+Test method and service load classification: Not stated

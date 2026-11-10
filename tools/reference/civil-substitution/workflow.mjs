@@ -46,7 +46,13 @@ export async function createWorkflow() {
   const runner = new LocalScriptRunner({ repoRoot });
   const clients = new Set();
   let submittal = null;
-  let lastReview = null;
+  let evidence = null;
+  const reviews = [];
+  const loadRating = await readFile(path.join(here, "load-rating.txt"), "utf8");
+  const submissionFor = (deltaDigest) => {
+    const revision = evidence ? 2 : 1;
+    return { revision, digest: digest({ deltaDigest, revision, evidence }), evidence };
+  };
 
   async function session(role, modelId) {
     const actor = Object.hasOwn(identities, role) ? identities[role] : null;
@@ -122,11 +128,15 @@ export async function createWorkflow() {
     assert.equal(digest(main), acceptedDigest, "Accepted design must remain pinned");
     const proposal = submittal ? await (await host.open(`${accepted.modelId}~${submittal.id}`)).store.head() : null;
     const delta = proposal ? result(await deltaFor(role), "lineage_delta_result") : null;
+    const submission = delta?.changedIds.length ? submissionFor(delta.deltaDigest) : null;
+    const lastReview = reviews.at(-1);
     return {
+      submission,
+      reviews: [...reviews],
       accepted: summary(main), proposal: proposal ? summary(proposal) : null,
       copy: submittal ? { id: submittal.id, name: submittal.name, role: submittal.role, parentRevision: submittal.parent.revision } : null,
       delta: delta ? { digest: delta.deltaDigest, headRevision: delta.headRevision, changedIds: delta.changedIds } : null,
-      review: lastReview ? { ...lastReview, current: lastReview.digest === delta?.deltaDigest } : null,
+      review: lastReview ? { ...lastReview, current: lastReview.submissionDigest === submission?.digest } : null,
       acts: await acts.list(),
     };
   }
@@ -162,14 +172,51 @@ export async function createWorkflow() {
     const s = await session(role, modelId);
     try { return await s.edit(parsed.batches[0]); } finally { s.close(); }
   }
-  async function review(role, deltaDigest, outcome, reason) {
+  async function resubmit(role, submissionDigest, gasketResponse) {
+    if (role !== "contractor") throw new Error("Only the contractor can resubmit");
+    const delta = result(await deltaFor(role), "lineage_delta_result");
+    const current = submissionFor(delta.deltaDigest);
+    const previous = reviews.at(-1);
+    if (evidence || !previous || previous.outcome !== "revise_and_resubmit" || previous.submissionDigest !== current.digest || submissionDigest !== current.digest) {
+      throw new Error("Resubmission requires a current revise-and-resubmit decision on the first submission");
+    }
+    if (typeof gasketResponse !== "string" || !gasketResponse.trim() || gasketResponse.length > 500) {
+      throw new Error("Enter a gasket response of up to 500 characters");
+    }
+    evidence = {
+      document: { title: "ECC-LR-FC600-S · Rev A", text: loadRating, href: "/load-rating.txt" },
+      gasketResponse: gasketResponse.trim(),
+    };
+    return { message: "Submission 2 sent for review with the load-rating document and gasket response." };
+  }
+
+  async function review(role, deltaDigest, outcome, reason, submissionDigest) {
     if (!["revise_and_resubmit", "rejected"].includes(outcome)) throw new Error("Choose a review decision");
     if (typeof reason !== "string" || !reason.trim() || reason.length > 500) throw new Error("Enter a review reason of up to 500 characters");
     if (!submittal) throw new Error("Create a submittal first");
     const s = await session(role, `${accepted.modelId}~${submittal.id}`);
     try {
-      const answer = await s.ask({ type: "lineage_review", lineageId: submittal.id, outcome, reason, deltaDigest });
-      if (answer.type === "lineage_act_recorded") lastReview = { outcome: answer.act.outcome, digest: answer.act.deltaDigest, reviewer: identities[role].name, reason: answer.act.reason, sequence: answer.seq };
+      const delta = result(await s.ask({ type: "lineage_delta", lineageId: submittal.id }), "lineage_delta_result");
+      const submission = submissionFor(delta.deltaDigest);
+      if (!delta.changedIds.length || submissionDigest !== submission.digest || deltaDigest !== delta.deltaDigest) {
+        return { type: "request_refused", reason: "Refresh and review the current submission before recording a decision." };
+      }
+      if (reviews.some((review) => review.submissionDigest === submission.digest)) {
+        return { type: "request_refused", reason: "This submission already has a recorded decision." };
+      }
+      const answer = await s.ask({ type: "lineage_review", lineageId: submittal.id, outcome, reason: `${reason.trim()} [Submission ${submission.revision}: ${submission.digest}]`, deltaDigest });
+      if (answer.type === "lineage_act_recorded") {
+        reviews.push({
+          outcome: answer.act.outcome,
+          digest: answer.act.deltaDigest,
+          submissionDigest: submission.digest,
+          submissionRevision: submission.revision,
+          evidence: submission.evidence,
+          reviewer: identities[role].name,
+          reason: reason.trim(),
+          sequence: answer.seq,
+        });
+      }
       return answer;
     } finally { s.close(); }
   }
@@ -179,5 +226,5 @@ export async function createWorkflow() {
     try { return await s.edit({ type: "set_parameters", id: "MH1-COVER", scope: "instance", mark: "MH1-COVER-EDIT" }); }
     finally { s.close(); }
   }
-  return { state, createSubmittal, propose, review, attemptDesignEdit, close() { for (const client of clients) client.dispose(); clients.clear(); } };
+  return { state, loadRatingDocument: () => loadRating, createSubmittal, propose, resubmit, review, attemptDesignEdit, close() { for (const client of clients) client.dispose(); clients.clear(); } };
 }
