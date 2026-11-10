@@ -1,0 +1,18 @@
+{
+  "manufacturer": "Example Civil Castings (fictional)",
+  "document": "ECC-FC600",
+  "revision": "A",
+  "page": 1,
+  "family": "FC600 frame and cover",
+  "frame": "F600-100",
+  "clearOpeningMm": 600,
+  "frameOuterDiameterMm": 800,
+  "frameDepthMm": 100,
+  "coverDiameterMm": 650,
+  "coverThicknessMm": 35,
+  "material": "Ductile iron (synthetic specification)",
+  "variants": [
+    { "orderCode": "ECC-FC600-S", "cover": "C600-S", "option": "Solid cover" },
+    { "orderCode": "ECC-FC600-G", "cover": "C600-G", "option": "Solid cover with gasket option" }
+  ]
+}
