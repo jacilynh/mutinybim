@@ -1,0 +1,4 @@
+{
+  "extends": "../../../packages/tsconfig.bim.json",
+  "include": ["./*.ts", "../../../packages/bim-first-party/src/**/*.ts"]
+}
