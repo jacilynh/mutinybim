@@ -1,0 +1,13 @@
+body { margin: 0; background: var(--mutiny-background); color: var(--mutiny-text); font-family: var(--mutiny-font-body); }
+.review-demo { max-width: 1280px; margin: auto; padding: 30px; display: grid; gap: 22px; }
+header, .title { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+h1 { font-family: var(--mutiny-font-heading); font-size: 36px; font-weight: var(--mutiny-heading-weight); margin-bottom: 8px; }
+.muted { color: var(--mutiny-muted); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.columns { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.hash { font-family: var(--mutiny-font-mono); overflow-wrap: anywhere; font-size: 12px; color: var(--mutiny-muted); }
+@media (max-width: 800px) { .columns { grid-template-columns: 1fr; } header, .title { flex-wrap: wrap; } .review-demo { padding: 16px; } }
+.schedule-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--mutiny-border); }
+thead { background: var(--mutiny-subtle); }

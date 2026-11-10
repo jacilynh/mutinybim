@@ -16,7 +16,11 @@ const { createBimToolServer } = await import("../../../packages/bim-mcp/src/serv
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../..");
-const out = path.join(repoRoot, "mutinybim-examples/civil-cover-catalog");
+const [flag, directory, ...extra] = process.argv.slice(2);
+if ((flag && (flag !== "--out" || !directory)) || extra.length) {
+  throw new Error("Usage: node tools/reference/civil-cover-catalog/run.mjs [--out directory]");
+}
+const out = directory ? path.resolve(directory) : path.join(repoRoot, "mutinybim-examples/civil-cover-catalog");
 const sheet = JSON.parse(await readFile(path.join(here, "cut-sheet.json"), "utf8"));
 const template = await readFile(path.join(here, "install.ts"), "utf8");
 const source = template.replace('"__CUT_SHEET__"', () => JSON.stringify(JSON.stringify(sheet)));
