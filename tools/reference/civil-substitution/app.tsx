@@ -7,7 +7,7 @@ import {
 import "./style.css";
 
 type Role = "contractor" | "owner" | "engineer";
-type Decision = "revise_and_resubmit" | "rejected";
+type Decision = "revise_and_resubmit" | "rejected" | "approved";
 interface Schedule {
   revision: number;
   fields: { id: string; label: string; value: string }[];
@@ -18,6 +18,8 @@ interface Evidence {
 }
 interface Review {
   outcome: Decision;
+  sequence: number;
+  acceptedRevision: number;
   reason: string;
   reviewer: string;
   submissionRevision: number;
@@ -35,6 +37,9 @@ interface ChecklistItem {
   assessment: { status: RequirementStatus; note: string; reviewer: string } | null;
 }
 interface State {
+  approvalStale: boolean;
+  preview: { id: string; revision: number; changes: { label: string; before: string; after: string }[] } | null;
+  handoff: { before: Schedule; revision: number; approvalSequence: number; submissionRevision: number; evidence: Evidence } | null;
   checklist: ChecklistItem[];
   submission: { revision: number; digest: string; evidence: Evidence | null } | null;
   reviews: Review[];
@@ -47,6 +52,7 @@ interface State {
 const decisions = {
   revise_and_resubmit: "Revise and resubmit",
   rejected: "Reject substitution",
+  approved: "Approve substitution",
 };
 
 function Requirement({ item, evidence, editable, busy, save }: {
@@ -62,7 +68,7 @@ function Requirement({ item, evidence, editable, busy, save }: {
     <Card>
       <CardTitle>{item.label}</CardTitle>
       <p>{item.id === "gasket" ? evidence.gasketResponse : (
-        <><a href={evidence.document.href} download>{evidence.document.title}</a> reports a synthetic proof load. The service load classification is unspecified.</>
+        <><a href={evidence.document.href} download>{evidence.document.title}</a>{evidence.document.href === "/load-rating-rev-b.txt" ? " states the fictional Demo Vehicular Service classification." : " reports a synthetic proof load. The service load classification is unspecified."}</>
       )}</p>
       <p><strong>{item.assessment ? statuses[item.assessment.status] : "Awaiting assessment"}</strong>{item.assessment && ` · ${item.assessment.reviewer}`}</p>
       {item.assessment && <p>{item.assessment.note}</p>}
@@ -117,8 +123,9 @@ function Demo() {
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
+      if (body.result?.type === "request_refused") throw new Error(body.message);
       setMessage(body.message);
-      if (action === "review" && body.result?.type === "lineage_act_recorded") setReason("");
+      if (action === "review" && body.result?.type === "lineage_act_recorded") { setReason(""); setOutcome("revise_and_resubmit"); }
       await load(role);
     } catch (problem) {
       setError(problem instanceof Error ? problem.message : String(problem));
@@ -129,8 +136,10 @@ function Demo() {
 
   const hasChange = Boolean(state?.delta?.changedIds.length);
   const submission = state?.submission;
-  const firstReview = state?.reviews[0];
-  const canResubmit = role === "contractor" && submission?.revision === 1
+  const canApprove = submission?.revision === 3 && state?.checklist.every((item) => item.assessment?.status === "resolved");
+  const approved = state?.review?.current && state.review.outcome === "approved";
+  const canReview = role === "engineer" && (!state?.review?.current || state.approvalStale);
+  const canResubmit = role === "contractor" && submission && submission.revision < 3
     && state?.review?.current && state.review.outcome === "revise_and_resubmit";
   const proposalFields = new Map(state?.proposal?.fields.map(({ id, value }) => [id, value]));
   return (
@@ -185,35 +194,35 @@ function Demo() {
               </tbody>
             </table>
           </div>
-          {hasChange && <p>The proposed variant removes the gasket option. Scheduled dimensions match. The source leaves the load rating unspecified for both variants.</p>}
         </Card>
       )}
       {canResubmit && (
         <Card>
           <CardTitle>Respond to the review</CardTitle>
           <p>{state.review?.reason}</p>
-          <p>Synthetic load-rating document ECC-LR-FC600-S · Rev A</p>
-          <Field>
-            <Label htmlFor="gasket-response">Gasket response</Label>
-            <Textarea id="gasket-response" value={gasketResponse} maxLength={500} disabled={busy} onChange={(event) => setGasketResponse(event.target.value)} />
-          </Field>
-          <Button disabled={busy || !gasketResponse.trim()} onClick={() => void act("resubmit")}>Send submission 2</Button>
+          {submission.revision === 1 ? <>
+            <p>Synthetic load-rating document ECC-LR-FC600-S · Rev A</p>
+            <Field>
+              <Label htmlFor="gasket-response">Gasket response</Label>
+              <Textarea id="gasket-response" value={gasketResponse} maxLength={500} disabled={busy} onChange={(event) => setGasketResponse(event.target.value)} />
+            </Field>
+          </> : <p>Submission 3 includes the synthetic Rev B service classification and the reviewer’s gasket confirmation.</p>}
+          <Button disabled={busy || (submission.revision === 1 && !gasketResponse.trim())} onClick={() => void act("resubmit")}>Send submission {submission.revision + 1}</Button>
         </Card>
       )}
       {submission?.evidence && (
         <Card>
-          <CardTitle>Changes since the first review</CardTitle>
-          <p>Submission 1 had no supplemental evidence. Submission 2 adds the document and response below. The proposed part is ECC-FC600-S in both submissions.</p>
+          <CardTitle>Submission {submission.revision} evidence</CardTitle>
           <p><a href={submission.evidence.document.href} download>{submission.evidence.document.title} · Download synthetic load-rating document</a></p>
           <p><strong>Gasket response</strong> · {submission.evidence.gasketResponse}</p>
         </Card>
       )}
       {submission?.evidence && state && (
         <Card>
-          <CardTitle>Submission 2 requirements checklist</CardTitle>
+          <CardTitle>Submission {submission.revision} requirements checklist</CardTitle>
           {state.checklist.map((item) => (
             <Requirement key={`${submission.digest}-${item.id}`} item={item} evidence={submission.evidence!}
-              editable={role === "engineer"} busy={busy}
+              editable={role === "engineer" && !state.reviews.some((entry) => entry.submissionRevision === submission.revision && entry.outcome === "approved")} busy={busy}
               save={(status, note) => void act("assess", { itemId: item.id, status, note })} />
           ))}
         </Card>
@@ -222,20 +231,22 @@ function Demo() {
         <Card>
           <CardTitle>Review decisions</CardTitle>
           {state?.reviews.map((review) => (
-            <div key={review.submissionRevision}>
+            <div key={review.sequence} id={`review-${review.sequence}`}>
               <p><strong>Submission {review.submissionRevision} · {decisions[review.outcome]}</strong> · {review.reviewer}</p>
               <p>{review.reason}</p>
-              <p>{review.evidence ? `Evidence reviewed: ${review.evidence.document.title} and gasket response.` : "Evidence reviewed: original catalog schedule."}</p>
+              {review.evidence ? <p>Evidence reviewed · <a href={review.evidence.document.href}>{review.evidence.document.title}</a> · {review.evidence.gasketResponse}</p> : <p>Evidence reviewed · Original catalog schedule</p>}
+              {review.outcome === "approved" && <p>Accepted design reviewed · rev {review.acceptedRevision}</p>}
             </div>
           ))}
-          {firstReview && submission?.revision === 2 && !state?.review?.current && <p>Submission 2 is awaiting a new decision.</p>}
-          {role === "engineer" && !state?.review?.current && (
+          {state?.approvalStale && <Alert><AlertDescription>The accepted design changed after approval. Record a fresh review before applying.</AlertDescription></Alert>}
+          {canReview && (
             <>
               <Field>
                 <Label htmlFor="outcome">Decision</Label>
                 <NativeSelect id="outcome" value={outcome} disabled={busy} onChange={(event) => setOutcome(event.target.value as Decision)}>
                   <option value="revise_and_resubmit">Revise and resubmit</option>
                   <option value="rejected">Reject substitution</option>
+                  {canApprove && <option value="approved">Approve substitution</option>}
                 </NativeSelect>
               </Field>
               <Field>
@@ -246,6 +257,35 @@ function Demo() {
             </>
           )}
           {!state?.review && role !== "engineer" && <p>Awaiting a decision from the civil reviewer.</p>}
+        </Card>
+      )}
+      {approved && role === "engineer" && !state?.approvalStale && !state?.handoff && (
+        <Card>
+          <CardTitle>Apply approved substitution</CardTitle>
+          <Button disabled={busy} onClick={() => void act("preview-handoff")}>Preview accepted schedule change</Button>
+          {state?.preview && (
+            <>
+              <p>MH1 · Accepted revision {state.preview.revision}</p>
+              <table>
+                <thead><tr><th scope="col">Specification</th><th scope="col">Accepted</th><th scope="col">After apply</th></tr></thead>
+                <tbody>{state.preview.changes.map((change) => (
+                  <tr key={change.label}><th scope="row">{change.label}</th><td>{change.before}</td><td>{change.after}</td></tr>
+                ))}</tbody>
+              </table>
+              <Button disabled={busy} onClick={() => void act("apply-handoff", { previewId: state.preview!.id })}>Apply ECC-FC600-S</Button>
+            </>
+          )}
+        </Card>
+      )}
+      {state?.handoff && (
+        <Card>
+          <CardTitle>Accepted schedule handoff</CardTitle>
+          <p>MH1 · ECC-FC600-S applied in revision {state.handoff.revision}.</p>
+          <p><a href={`#review-${state.handoff.approvalSequence}`}>Submission {state.handoff.submissionRevision} approval</a> · <a href={state.handoff.evidence.document.href}>Load classification evidence</a></p>
+          <details>
+            <summary>Prior accepted schedule · rev {state.handoff.before.revision}</summary>
+            <dl>{state.handoff.before.fields.map((field) => <div key={field.id}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
+          </details>
         </Card>
       )}
     </main>

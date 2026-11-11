@@ -1,0 +1,4 @@
+Synthetic demonstration document · ECC-LR-FC600-S · Rev B
+Applies to order code ECC-FC600-S.
+Service load classification: Demo Vehicular Service (fictional classification).
+This classification meets the fictional MH1 schedule requirement used in the demo.

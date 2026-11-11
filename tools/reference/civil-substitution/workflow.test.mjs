@@ -70,6 +70,51 @@ test("MH1 substitution stays on the contractor copy and review cites its exact d
     assert.deepEqual(final.reviews[1].evidence, revised.submission.evidence);
     assert.equal(final.review.current, true);
     assert.deepEqual(final.accepted, initial.accepted);
+
+    await workflow.resubmit("contractor", revised.submission.digest);
+    const third = await workflow.state("engineer");
+    assert.equal(third.submission.revision, 3);
+    assert.match(third.submission.evidence.document.text, /Demo Vehicular Service/);
+    assert.ok(third.checklist.every((item) => item.assessment === null));
+    const approve = () => workflow.review("engineer", third.delta.digest, "approved", "Both synthetic requirements are satisfied.", third.submission.digest);
+    assert.equal((await approve()).type, "request_refused");
+    for (const item of third.checklist) {
+      await workflow.assessRequirement("engineer", third.submission.digest, item.id, "resolved", "Verified against submission 3 evidence.");
+    }
+    assert.equal((await approve()).type, "lineage_act_recorded");
+    await assert.rejects(workflow.previewHandoff("contractor"), /Only the civil reviewer/);
+    await assert.rejects(workflow.applyHandoff("engineer"), /Preview/);
+    await workflow.previewHandoff("engineer");
+    const previewed = await workflow.state("engineer");
+    assert.deepEqual(previewed.accepted, initial.accepted);
+    assert.deepEqual(previewed.preview.changes.map(({ before, after }) => [before, after]), [
+      ["ECC-FC600-G", "ECC-FC600-S"],
+      ["C600-G", "C600-S"],
+      ["Solid cover with gasket option", "Solid cover"],
+    ]);
+
+    assert.equal((await workflow.simulateLaterMh1Edit()).status, "committed");
+    await assert.rejects(workflow.applyHandoff("engineer", previewed.preview.id), /fresh review/);
+    await assert.rejects(workflow.previewHandoff("engineer"), /fresh review/);
+    const stale = await workflow.state("owner");
+    assert.equal(stale.approvalStale, true);
+    assert.equal(stale.preview, null);
+    assert.equal(field(stale.accepted, "order_code"), "ECC-FC600-G");
+
+    const renewed = await approve();
+    assert.equal(renewed.type, "lineage_act_recorded");
+    assert.notEqual(renewed.seq, previewed.review.sequence);
+    await assert.rejects(workflow.applyHandoff("engineer", previewed.preview.id), /Preview/);
+    await workflow.previewHandoff("engineer");
+    const refreshed = await workflow.state("engineer");
+    await workflow.applyHandoff("engineer", refreshed.preview.id);
+    await assert.rejects(workflow.applyHandoff("engineer", refreshed.preview.id), /already been applied/);
+    const applied = await workflow.state("owner");
+    assert.equal(field(applied.accepted, "order_code"), "ECC-FC600-S");
+    assert.equal(applied.handoff.revision, applied.accepted.revision);
+    assert.equal(applied.handoff.approvalSequence, renewed.seq);
+    assert.deepEqual(applied.handoff.before, stale.accepted);
+    assert.deepEqual(applied.handoff.evidence, third.submission.evidence);
   } finally {
     workflow.close();
   }

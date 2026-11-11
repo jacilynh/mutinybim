@@ -12,7 +12,7 @@ import { CIVIL_SET } from "../../../packages/bim-pack-civil/__tests__/fixtures/s
 import { LocalScriptRunner } from "@permitzip/bim-script-runner/local";
 import { sliceModel, checkScriptOutput, parseScriptOutput } from "@permitzip/bim-script";
 import { declaredReads } from "../../../packages/bim-mcp/src/examples.ts";
-import { fieldProviderRegistry } from "@permitzip/bim-kernel";
+import { executeCommand, fieldProviderRegistry, withUpgradePolicy } from "@permitzip/bim-kernel";
 import { openSchedule } from "@permitzip/bim-kernel/schedules";
 import { fromCanonical, to } from "@permitzip/bim-units";
 import { digest } from "../rooftop-review/packet.mjs";
@@ -36,7 +36,6 @@ export async function createWorkflow() {
   } finally { await rm(temp, { recursive: true, force: true }); }
   accepted.modelId = "civil-substitution-reference";
   bindModelPacks(accepted.modelId, CIVIL_SET);
-  const acceptedDigest = digest(accepted);
   const members = new InMemoryModelMemberStore();
   const copies = new InMemoryLineageMemberStore();
   for (const [key, actor] of Object.entries(identities)) members.set(accepted.modelId, actor.id, key === "engineer" ? "editor" : "viewer");
@@ -47,6 +46,9 @@ export async function createWorkflow() {
   const clients = new Set();
   let submittal = null;
   let evidence = null;
+  let revision = 1;
+  let preview = null;
+  let handoff = null;
   const reviews = [];
   const requirements = [
     { id: "gasket", label: "Confirm whether the project requires a gasket" },
@@ -54,8 +56,8 @@ export async function createWorkflow() {
   ];
   const assessments = new Map();
   const loadRating = await readFile(path.join(here, "load-rating.txt"), "utf8");
+  const revisedLoadRating = await readFile(path.join(here, "load-rating-rev-b.txt"), "utf8");
   const submissionFor = (deltaDigest) => {
-    const revision = evidence ? 2 : 1;
     return { revision, digest: digest({ deltaDigest, revision, evidence }), evidence };
   };
 
@@ -91,10 +93,10 @@ export async function createWorkflow() {
         requests.set(requestId, (answer) => { clearTimeout(timer); resolve(answer); });
         void hub.handle(conn, JSON.stringify({ ...message, requestId }));
       }),
-      edit: (command) => new Promise((resolve, reject) => {
+      edit: (command, baseRevision) => new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("Demo edit timed out")), 10_000);
         finishEdit = (result) => { clearTimeout(timer); finishEdit = null; resolve(result.status === "rejected" ? { status: result.status, message: result.error.message } : { status: result.status }); };
-        const submitted = client.submit(command);
+        const submitted = client.submit(command, { baseRevision });
         if (!submitted.ok) { clearTimeout(timer); resolve({ status: "rejected", message: submitted.error.message }); }
       }),
       close() { client.dispose(); clients.delete(client); },
@@ -130,13 +132,16 @@ export async function createWorkflow() {
     const reader = await session(role, accepted.modelId);
     reader.close();
     const main = await host.main.store.head();
-    assert.equal(digest(main), acceptedDigest, "Accepted design must remain pinned");
+
     const proposal = submittal ? await (await host.open(`${accepted.modelId}~${submittal.id}`)).store.head() : null;
     const delta = proposal ? result(await deltaFor(role), "lineage_delta_result") : null;
     const submission = delta?.changedIds.length ? submissionFor(delta.deltaDigest) : null;
     const lastReview = reviews.at(-1);
     return {
       submission,
+      handoff,
+      preview: preview?.acceptedDigest === digest(main) ? preview.display : null,
+      approvalStale: lastReview?.outcome === "approved" && !handoff && lastReview.acceptedDigest !== digest(main),
       checklist: submission?.evidence ? requirements.map((item) => ({
         ...item,
         assessment: assessments.get(submission.digest)?.get(item.id) ?? null,
@@ -163,10 +168,8 @@ export async function createWorkflow() {
       return { status: "created", message: "Submittal created from the pinned accepted revision. Owner can view; designated civil reviewer can review." };
     } finally { s.close(); }
   }
-  async function propose(role) {
-    if (!submittal) throw new Error("Create a submittal first");
-    const modelId = `${accepted.modelId}~${submittal.id}`;
-    const model = await (await host.open(modelId)).store.head();
+  async function checkedSubstitution(role, model) {
+    const modelId = model.modelId;
     const source = await readFile(path.join(here, "./substitute.ts"), "utf8");
     const connection = await session(role, modelId);
     const features = connection.features;
@@ -177,17 +180,32 @@ export async function createWorkflow() {
     if (!checked.ok) throw new Error("The substitution script did not pass its output checks");
     const parsed = parseScriptOutput(output.output);
     if (parsed.kind !== "edits" || parsed.batches.length !== 1) throw new Error("Expected one checked edit batch");
-    assert.equal(digest(await (await host.open(modelId)).store.head()), digest(model), "Script preview must not save changes");
+    return { batch: parsed.batches[0], features };
+  }
+
+  async function propose(role) {
+    if (!submittal) throw new Error("Create a submittal first");
+    const modelId = `${accepted.modelId}~${submittal.id}`;
+    const model = await (await host.open(modelId)).store.head();
+    const { batch } = await checkedSubstitution(role, { ...model, modelId });
     const s = await session(role, modelId);
-    try { return await s.edit(parsed.batches[0]); } finally { s.close(); }
+    try { return await s.edit(batch); } finally { s.close(); }
   }
   async function resubmit(role, submissionDigest, gasketResponse) {
     if (role !== "contractor") throw new Error("Only the contractor can resubmit");
     const delta = result(await deltaFor(role), "lineage_delta_result");
     const current = submissionFor(delta.deltaDigest);
     const previous = reviews.at(-1);
-    if (evidence || !previous || previous.outcome !== "revise_and_resubmit" || previous.submissionDigest !== current.digest || submissionDigest !== current.digest) {
+    if (revision >= 3 || !previous || previous.outcome !== "revise_and_resubmit" || previous.submissionDigest !== current.digest || submissionDigest !== current.digest) {
       throw new Error("Resubmission requires a current revise-and-resubmit decision on the first submission");
+    }
+    if (revision === 2) {
+      evidence = {
+        document: { title: "ECC-LR-FC600-S · Rev B", text: revisedLoadRating, href: "/load-rating-rev-b.txt" },
+        gasketResponse: "For this synthetic MH1 scenario, the civil reviewer confirmed a gasket is optional.",
+      };
+      revision = 3;
+      return { message: "Submission 3 sent with the revised load classification and gasket confirmation." };
     }
     if (typeof gasketResponse !== "string" || !gasketResponse.trim() || gasketResponse.length > 500) {
       throw new Error("Enter a gasket response of up to 500 characters");
@@ -196,6 +214,7 @@ export async function createWorkflow() {
       document: { title: "ECC-LR-FC600-S · Rev A", text: loadRating, href: "/load-rating.txt" },
       gasketResponse: gasketResponse.trim(),
     };
+    revision = 2;
     return { message: "Submission 2 sent for review with the load-rating document and gasket response." };
   }
 
@@ -213,16 +232,19 @@ export async function createWorkflow() {
     if (!submission.evidence || submission.digest !== submissionDigest) {
       throw new Error("Refresh and review the current submission before assessing a requirement.");
     }
+    if (reviews.some((entry) => entry.submissionDigest === submissionDigest && entry.outcome === "approved")) {
+      throw new Error("The approved checklist is part of the review record.");
+    }
     const items = assessments.get(submissionDigest) ?? new Map();
     items.set(itemId, {
       status, note: note.trim(), submissionDigest, reviewer: identities[role].name,
     });
     assessments.set(submissionDigest, items);
-    return { message: "Checklist assessment saved for submission 2." };
+    return { message: "Checklist assessment saved." };
   }
 
   async function review(role, deltaDigest, outcome, reason, submissionDigest) {
-    if (!["revise_and_resubmit", "rejected"].includes(outcome)) throw new Error("Choose a review decision");
+    if (!["revise_and_resubmit", "rejected", "approved"].includes(outcome)) throw new Error("Choose a review decision");
     if (typeof reason !== "string" || !reason.trim() || reason.length > 500) throw new Error("Enter a review reason of up to 500 characters");
     if (!submittal) throw new Error("Create a submittal first");
     const s = await session(role, `${accepted.modelId}~${submittal.id}`);
@@ -232,10 +254,18 @@ export async function createWorkflow() {
       if (!delta.changedIds.length || submissionDigest !== submission.digest || deltaDigest !== delta.deltaDigest) {
         return { type: "request_refused", reason: "Refresh and review the current submission before recording a decision." };
       }
-      if (reviews.some((review) => review.submissionDigest === submission.digest)) {
+      const main = await host.main.store.head();
+      const acceptedDigest = digest(main);
+      const prior = reviews.at(-1);
+      const needsFreshReview = prior?.outcome === "approved" && prior.acceptedDigest !== acceptedDigest && !handoff;
+      if (outcome === "approved" && (submission.revision !== 3 ||
+        !requirements.every(({ id }) => assessments.get(submission.digest)?.get(id)?.status === "resolved"))) {
+        return { type: "request_refused", reason: "Resolve both requirements on submission 3 before approving." };
+      }
+      if (prior?.submissionDigest === submission.digest && !needsFreshReview) {
         return { type: "request_refused", reason: "This submission already has a recorded decision." };
       }
-      const answer = await s.ask({ type: "lineage_review", lineageId: submittal.id, outcome, reason: `${reason.trim()} [Submission ${submission.revision}: ${submission.digest}]`, deltaDigest });
+      const answer = await s.ask({ type: "lineage_review", lineageId: submittal.id, outcome, reason: `${reason.trim()} [Submission ${submission.revision}: ${submission.digest}; accepted revision ${main.revision}: ${acceptedDigest}]`, deltaDigest });
       if (answer.type === "lineage_act_recorded") {
         reviews.push({
           outcome: answer.act.outcome,
@@ -243,6 +273,8 @@ export async function createWorkflow() {
           submissionDigest: submission.digest,
           submissionRevision: submission.revision,
           evidence: submission.evidence,
+          acceptedDigest,
+          acceptedRevision: main.revision,
           reviewer: identities[role].name,
           reason: reason.trim(),
           sequence: answer.seq,
@@ -251,11 +283,71 @@ export async function createWorkflow() {
       return answer;
     } finally { s.close(); }
   }
+
+  async function approvedTarget(role) {
+    if (role !== "engineer") throw new Error("Only the civil reviewer can apply the approved substitution.");
+    if (handoff) throw new Error("The approved substitution has already been applied.");
+    const approval = reviews.at(-1);
+    const delta = result(await deltaFor(role), "lineage_delta_result");
+    if (approval?.outcome !== "approved" || approval.submissionDigest !== submissionFor(delta.deltaDigest).digest) {
+      throw new Error("Approve the current submission before applying the substitution.");
+    }
+    const model = await host.main.store.head();
+    if (approval.acceptedDigest !== digest(model)) {
+      throw new Error("The accepted design changed after approval. Record a fresh review before applying.");
+    }
+    return { model, approval };
+  }
+
+  async function previewHandoff(role) {
+    const { model, approval } = await approvedTarget(role);
+    const { batch, features } = await checkedSubstitution(role, model);
+    const applied = withUpgradePolicy((feature) => features.includes(feature), () => executeCommand(model, batch));
+    if (!applied.ok) throw new Error(applied.error.message);
+    const before = summary(model);
+    const after = summary(applied.model);
+    const changes = before.fields.flatMap((field, index) => {
+      const value = after.fields[index].value;
+      return value === field.value ? [] : [{ label: field.label, before: field.value, after: value }];
+    });
+    const display = { id: randomUUID(), revision: before.revision, changes };
+    preview = { display, batch, before, acceptedDigest: approval.acceptedDigest, sequence: approval.sequence };
+    return { message: "Checked the MH1 schedule preview. Apply it to update the accepted design." };
+  }
+
+  async function applyHandoff(role, previewId) {
+    const { model, approval } = await approvedTarget(role);
+    if (!preview || preview.display.id !== previewId || preview.sequence !== approval.sequence) {
+      throw new Error("Preview the currently approved substitution before applying it.");
+    }
+    const s = await session(role, accepted.modelId);
+    try {
+      const outcome = await s.edit(preview.batch, model.revision);
+      if (outcome.status !== "committed") throw new Error(outcome.message ?? "The substitution was not committed.");
+      handoff = {
+        before: preview.before,
+        revision: (await host.main.store.head()).revision,
+        approvalSequence: approval.sequence,
+        submissionRevision: approval.submissionRevision,
+        evidence: approval.evidence,
+      };
+      preview = null;
+      return { message: "ECC-FC600-S applied to the accepted MH1 schedule." };
+    } finally { s.close(); }
+  }
+
+  // Exercise a real accepted-model edit in the stale-approval regression.
+  async function simulateLaterMh1Edit() {
+    const s = await session("engineer", accepted.modelId);
+    try { return await s.edit({ type: "move_elements", ids: ["MH1-COVER"], delta: { x: 0, y: 0 }, dzMm: 10 }); }
+    finally { s.close(); }
+  }
+
   async function attemptDesignEdit(role) {
     if (role === "engineer") throw new Error("Accepted-design editing is outside this demonstration");
     const s = await session(role, accepted.modelId);
     try { return await s.edit({ type: "set_parameters", id: "MH1-COVER", scope: "instance", mark: "MH1-COVER-EDIT" }); }
     finally { s.close(); }
   }
-  return { state, loadRatingDocument: () => loadRating, createSubmittal, propose, resubmit, assessRequirement, review, attemptDesignEdit, close() { for (const client of clients) client.dispose(); clients.clear(); } };
+  return { state, loadRatingDocument: (revised) => revised ? revisedLoadRating : loadRating, previewHandoff, applyHandoff, simulateLaterMh1Edit, createSubmittal, propose, resubmit, assessRequirement, review, attemptDesignEdit, close() { for (const client of clients) client.dispose(); clients.clear(); } };
 }
