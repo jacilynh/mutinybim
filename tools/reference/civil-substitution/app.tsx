@@ -6,7 +6,7 @@ import {
 } from "@permitzip/bim-ui";
 import "./style.css";
 
-type Role = "contractor" | "owner" | "engineer";
+type Role = "contractor" | "owner" | "engineer" | "inspector";
 type Decision = "revise_and_resubmit" | "rejected" | "approved";
 interface Schedule {
   revision: number;
@@ -36,7 +36,18 @@ interface ChecklistItem {
   label: string;
   assessment: { status: RequirementStatus; note: string; reviewer: string } | null;
 }
+interface Observation {
+  stage: "delivery" | "installation";
+  observed: string;
+  expected: string;
+  matches: boolean;
+  revision: number;
+  inspector: string;
+  photo: string | null;
+  note: string;
+}
 interface State {
+  observations: Observation[];
   approvalStale: boolean;
   preview: { id: string; revision: number; changes: { label: string; before: string; after: string }[] } | null;
   handoff: { before: Schedule; revision: number; approvalSequence: number; submissionRevision: number; evidence: Evidence } | null;
@@ -92,7 +103,7 @@ function Requirement({ item, evidence, editable, busy, save }: {
 }
 
 function Demo() {
-  const [role, setRole] = useState<Role>("contractor");
+  const [role, setRole] = useState<Role>(new URLSearchParams(window.location.search).has("field") ? "inspector" : "contractor");
   const [state, setState] = useState<State | null>(null);
   const [outcome, setOutcome] = useState<Decision>("revise_and_resubmit");
   const [reason, setReason] = useState("");
@@ -162,6 +173,7 @@ function Demo() {
           }}>
             <option value="contractor">Contractor</option>
             <option value="owner">Owner</option>
+            <option value="inspector">Field inspector</option>
             <option value="engineer">Civil reviewer</option>
           </NativeSelect>
         </Field>
@@ -174,6 +186,32 @@ function Demo() {
         <p role="status">{busy ? "Working…" : message}</p>
         {error && <Alert><AlertDescription>{error}</AlertDescription></Alert>}
       </Card>
+      {state?.handoff && (role === "inspector" || role === "owner") && (
+        <Card>
+          <CardTitle>{role === "owner" ? "MH1 closeout" : "MH1 field verification"}</CardTitle>
+          <p>Accepted assembly · <strong>{state.accepted.fields.find((field) => field.id === "order_code")?.value}</strong> · Revision {state.accepted.revision}</p>
+          <p><a href={`#review-${state.handoff.approvalSequence}`}>Submission {state.handoff.submissionRevision} approval</a></p>
+          <Badge variant="outline">{state.observations.at(-1)?.matches ? "Installation verified" : state.observations.length ? "Open discrepancy" : "Awaiting field observation"}</Badge>
+          {state.observations.map((observation) => (
+            <section key={observation.stage}>
+              <h3>{observation.stage === "delivery" ? "1. Delivery mismatch" : "2. Installation verified"}</h3>
+              <p>Observed <strong>{observation.observed}</strong> · Expected {observation.expected} at revision {observation.revision}</p>
+              <p>{observation.note} · {observation.inspector}</p>
+              {observation.photo && (
+                <figure className="field-photo">
+                  <a href={observation.photo}><img src={observation.photo} alt="Staged storm manhole cover with an MH1 delivery tag marked ECC-FC600-G" /></a>
+                  <figcaption>Synthetic sample photo · Delivery tag</figcaption>
+                </figure>
+              )}
+            </section>
+          ))}
+          {role === "inspector" && state.observations.length < 2 && (
+            <Button disabled={busy} onClick={() => void act("observe", { stage: state.observations.length === 0 ? "delivery" : "installation" })}>
+              {state.observations.length === 0 ? "Record sample delivery · ECC-FC600-G" : "Verify sample installation · ECC-FC600-S"}
+            </Button>
+          )}
+        </Card>
+      )}
       {state && (
         <Card>
           <CardTitle>Structure schedule</CardTitle>

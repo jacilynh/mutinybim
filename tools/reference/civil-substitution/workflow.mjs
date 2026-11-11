@@ -20,6 +20,7 @@ import { digest } from "../rooftop-review/packet.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../..");
 export const identities = {
+  inspector: { id: "demo-inspector", name: "Field inspector (demo)", kind: "human" },
   contractor: { id: "demo-contractor", name: "Contractor (demo)", kind: "human" },
   owner: { id: "demo-owner", name: "Owner (demo)", kind: "human" },
   engineer: { id: "demo-engineer", name: "Civil reviewer / EOR (demo)", kind: "human" },
@@ -49,6 +50,7 @@ export async function createWorkflow() {
   let revision = 1;
   let preview = null;
   let handoff = null;
+  const observations = [];
   const reviews = [];
   const requirements = [
     { id: "gasket", label: "Confirm whether the project requires a gasket" },
@@ -140,6 +142,7 @@ export async function createWorkflow() {
     return {
       submission,
       handoff,
+      observations: [...observations],
       preview: preview?.acceptedDigest === digest(main) ? preview.display : null,
       approvalStale: lastReview?.outcome === "approved" && !handoff && lastReview.acceptedDigest !== digest(main),
       checklist: submission?.evidence ? requirements.map((item) => ({
@@ -164,6 +167,7 @@ export async function createWorkflow() {
       bindModelPacks(`${accepted.modelId}~${submittal.id}`, CIVIL_SET);
       // Explicit fixture invitations; neither grants edit on the accepted design.
       copies.grant(accepted.modelId, submittal.id, identities.owner.id, "read");
+      copies.grant(accepted.modelId, submittal.id, identities.inspector.id, "read");
       copies.grant(accepted.modelId, submittal.id, identities.engineer.id, "review");
       return { status: "created", message: "Submittal created from the pinned accepted revision. Owner can view; designated civil reviewer can review." };
     } finally { s.close(); }
@@ -336,6 +340,44 @@ export async function createWorkflow() {
     } finally { s.close(); }
   }
 
+  async function recordObservation(role, stage) {
+    if (role !== "inspector") throw new Error("Only the field inspector can record an observation.");
+    if (!handoff) throw new Error("Apply the approved substitution before field verification.");
+    const model = await host.main.store.head();
+    if (model.revision !== handoff.revision) throw new Error("The accepted schedule changed. Review the current revision before recording an observation.");
+    const expectedStage = ["delivery", "installation"][observations.length];
+    if (!expectedStage || stage !== expectedStage) throw new Error("Record each field observation in order and only once.");
+    const delivery = stage === "delivery";
+    const observed = delivery ? "ECC-FC600-G" : "ECC-FC600-S";
+    const expected = summary(model).fields.find(({ id }) => id === "order_code").value;
+    const matches = observed === expected;
+    observations.push({
+      stage, observed, expected, matches,
+      revision: model.revision,
+      inspector: identities.inspector.name,
+      photo: delivery ? "/mh1-delivery.jpg" : null,
+      note: delivery ? "Delivery tag on the staged assembly." : "Inspector checked the replacement assembly installed at MH1.",
+    });
+    return { message: matches ? "Installation verified against the accepted schedule." : "Delivery mismatch recorded for MH1." };
+  }
+
+  async function prepareFieldDemo() {
+    await createSubmittal("contractor");
+    const proposal = await propose("contractor");
+    if (proposal.status !== "committed") throw new Error(proposal.message ?? "Could not prepare the MH1 proposal.");
+    for (const reason of ["Provide load and gasket evidence.", "Confirm the gasket requirement and service load classification."]) {
+      const { delta, submission } = await state("engineer");
+      result(await review("engineer", delta.digest, "revise_and_resubmit", reason, submission.digest), "lineage_act_recorded");
+      await resubmit("contractor", submission.digest, "The proposed cover has no gasket option.");
+    }
+    const { delta, submission } = await state("engineer");
+    await assessRequirement("engineer", submission.digest, "gasket", "resolved", "Gasket confirmed optional for synthetic MH1.");
+    await assessRequirement("engineer", submission.digest, "load", "resolved", "Rev B confirms the fictional service classification.");
+    result(await review("engineer", delta.digest, "approved", "Both submission 3 requirements are satisfied.", submission.digest), "lineage_act_recorded");
+    await previewHandoff("engineer");
+    await applyHandoff("engineer", preview.display.id);
+  }
+
   // Exercise a real accepted-model edit in the stale-approval regression.
   async function simulateLaterMh1Edit() {
     const s = await session("engineer", accepted.modelId);
@@ -349,5 +391,5 @@ export async function createWorkflow() {
     try { return await s.edit({ type: "set_parameters", id: "MH1-COVER", scope: "instance", mark: "MH1-COVER-EDIT" }); }
     finally { s.close(); }
   }
-  return { state, loadRatingDocument: (revised) => revised ? revisedLoadRating : loadRating, previewHandoff, applyHandoff, simulateLaterMh1Edit, createSubmittal, propose, resubmit, assessRequirement, review, attemptDesignEdit, close() { for (const client of clients) client.dispose(); clients.clear(); } };
+  return { state, recordObservation, prepareFieldDemo, loadRatingDocument: (revised) => revised ? revisedLoadRating : loadRating, previewHandoff, applyHandoff, simulateLaterMh1Edit, createSubmittal, propose, resubmit, assessRequirement, review, attemptDesignEdit, close() { for (const client of clients) client.dispose(); clients.clear(); } };
 }

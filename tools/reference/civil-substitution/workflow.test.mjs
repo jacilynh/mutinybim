@@ -115,6 +115,19 @@ test("MH1 substitution stays on the contractor copy and review cites its exact d
     assert.equal(applied.handoff.approvalSequence, renewed.seq);
     assert.deepEqual(applied.handoff.before, stale.accepted);
     assert.deepEqual(applied.handoff.evidence, third.submission.evidence);
+    await assert.rejects(workflow.recordObservation("owner", "delivery"), /Only the field inspector/);
+    await assert.rejects(workflow.recordObservation("inspector", "installation"), /in order/);
+    await workflow.recordObservation("inspector", "delivery");
+    const mismatch = await workflow.state("owner");
+    assert.equal(mismatch.observations[0].photo, "/mh1-delivery.jpg");
+    await assert.rejects(workflow.recordObservation("inspector", "delivery"), /only once/);
+    await workflow.recordObservation("inspector", "installation");
+    const closeout = await workflow.state("owner");
+    assert.deepEqual(closeout.observations.map(({ observed, matches }) => [observed, matches]), [
+      ["ECC-FC600-G", false], ["ECC-FC600-S", true],
+    ]);
+    assert.ok(closeout.observations.every(({ revision }) => revision === applied.handoff.revision));
+    assert.deepEqual(closeout.accepted, applied.accepted);
   } finally {
     workflow.close();
   }

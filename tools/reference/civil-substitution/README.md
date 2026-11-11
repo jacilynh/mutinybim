@@ -8,7 +8,7 @@ Run from the repository root.
 node tools/reference/civil-substitution/server.mjs
 ```
 
-Open http://127.0.0.1:3202. Set `CIVIL_SUBSTITUTION_PORT` to change the port.
+Open http://127.0.0.1:3203. Set `CIVIL_SUBSTITUTION_PORT` to change the port.
 Restart the process to reset the in-memory demo.
 
 1. As Contractor, create a submittal and propose ECC-FC600-S.
@@ -50,3 +50,15 @@ node --test tools/reference/civil-substitution/workflow.test.mjs
 npx tsc -p tools/reference/civil-substitution/tsconfig.json
 npx eslint tools/reference/civil-substitution tools/reference/civil-cover-catalog/run.mjs
 ```
+
+
+To start at field verification with the synthetic approval and handoff already recorded:
+
+```sh
+node tools/reference/civil-substitution/server.mjs --field-demo
+```
+
+Open http://127.0.0.1:3203/?field. Record the delivery mismatch with the
+generated sample photo, then verify the replacement installation. Switch to
+Owner to view the closeout and both observations. Field observations reference
+the accepted schedule revision and do not edit the model.

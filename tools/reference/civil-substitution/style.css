@@ -11,3 +11,14 @@ h1 { font-family: var(--mutiny-font-heading); font-size: 36px; font-weight: var(
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--mutiny-border); }
 thead { background: var(--mutiny-subtle); }
+
+.field-photo {
+  margin-inline: 0;
+}
+
+.field-photo img {
+  display: block;
+  width: min(100%, 28rem);
+  height: auto;
+  border-radius: var(--mutiny-radius);
+}
