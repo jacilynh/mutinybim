@@ -1,0 +1,3 @@
+shot,pipe,structure,port,datum,unit,elevation
+MH1-01,P101-s1,MH1,in_e,DEMO-BM1,m,28.956
+MH1-02,P103-s1,MH1,out,DEMO-BM1,m,28.996
