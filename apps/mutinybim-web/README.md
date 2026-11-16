@@ -34,7 +34,7 @@ account in a private window and share the model with it to edit together.
 | `/settings` | Their name; password; linking a sign-in provider; **Your AI**: their own provider key, kept only in their browser. |
 | `/connect` | The address to paste into Claude, ChatGPT, Grok or Cursor (`<this app>/mcp`), the assistants they have signed in (and Sign out), and agent keys for a tool server on their own computer. |
 | `/oauth/authorize` | "Let “<assistant>” use your models?": Allow or Don't allow. |
-| `/approvals`, `/approvals/<id>` | Changes an assistant proposed when it couldn't ask the person itself: exactly what changes, Approve or Decline. In the header while any wait. |
+| `/approvals`, `/approvals/<id>` | Changes an assistant proposed when it couldn't ask the person itself: exactly what changes, Approve or Decline. The header's Approvals link counts what is waiting; every signed-in page and the editor show a notice with Approve / Decline while any wait (the editor and the header re-check `/api/hosted/approvals/waiting`, the signed-in person's own requests, every few seconds). |
 
 ### Bring your own AI
 
@@ -83,6 +83,10 @@ by address and the person signs in; there is no key to paste.
   its result lands only after the person approves it, as one undo step. Each
   run is in the sealed script box below. An assistant that runs the
   open-source kit itself can still send its output to `bim_apply_output`.
+  A script is sent once: it is kept in the account database for 36 hours
+  under a short id, so the assistant names the id to preview it, to fix it
+  (exact replacements) and to land it, also after a restart. Only the
+  person who sent it can use the id.
 - **Its name.** The assistant's changes, and the editor's list of who is
   here, carry the name it registered with ("Claude", "ChatGPT"), marked as an
   agent.
@@ -262,7 +266,7 @@ Operator commands run as the app's user:
 - Sharing is by account email on the same server; there are no emailed
   invitations or links for people without an account.
 - The editor screens that need hosted storage (firm part libraries, stored
-  drawings, linked Revit models, code studies, file storage) say in words that
+  drawings, linked models (IFC or Revit), code studies, file storage) say in words that
   they are not available here; the rest of the editor works.
 - Sign-up has no email confirmation (the app sends no email).
 - A tool call that was waiting for the person when the server restarted
