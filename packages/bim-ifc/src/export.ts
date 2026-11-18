@@ -259,7 +259,17 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
     const home = zoneHomeOf(Reflect.get(p, "ifc"));
     if (home) purposeHomes.set(p.id, home);
   }
-  const homes = new ParameterHomes([...(opts.parameterHomes ?? []), ...registryParameterHomes(withPackParameters(registry)), ...baselineParameterHomes()]);
+  const parameterRegistry = withPackParameters(registry);
+  const homes = new ParameterHomes([...(opts.parameterHomes ?? []), ...registryParameterHomes(parameterRegistry), ...baselineParameterHomes()]);
+  const parameterUnits = new Map<string, string>();
+  for (const cls of parameterRegistry.listClasses({ includeAbstract: true })) {
+    for (const field of parameterRegistry.fieldsFor(cls.id)) {
+      if (!field.storedUnit) continue;
+      for (const key of [field.key ?? field.path, field.path, ...(field.aliases ?? [])]) {
+        if (!parameterUnits.has(key)) parameterUnits.set(key, field.storedUnit);
+      }
+    }
+  }
   const warnings: string[] = [];
   const missingProxyClasses = new Map<string, number>();
   const warn = (s: string) => warnings.push(s);
@@ -334,7 +344,7 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
 
   const parameterValues = (bag: PropertyBag, values: Readonly<Record<string, ParamValue>>, fallbackSet?: string) => {
     for (const [key, value] of Object.entries(values).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-      const input: PropertyInput = typeof value === "number" ? { kind: "number", name: key, value } : typeof value === "boolean" ? { kind: "bool", name: key, value } : { kind: "text", name: key, value };
+      const input: PropertyInput = typeof value === "number" ? { kind: "number", name: key, value, unit: parameterUnits.get(key) } : typeof value === "boolean" ? { kind: "bool", name: key, value } : { kind: "text", name: key, value };
       bag.put(homes.find([key]), input, fallbackSet);
     }
   };

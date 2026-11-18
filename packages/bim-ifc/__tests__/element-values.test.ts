@@ -68,4 +68,20 @@ describe("IFC occurrence parameter values (#60)", () => {
     expect(properties(file, space)["Pset_SpaceCommon"]).toEqual({ Reference: "101" });
   });
 
+  it("writes a mapped millimetre quantity as an IFC length quantity", () => {
+    const m = building();
+    m.ok({ type: "set_element_values", elementIds: ["wall-1"], values: { "architecture.total_thickness": 250 } });
+    const out = exportIfc({ model: m.head, project: { id: "element-values", name: "Synthetic walls" }, timeStamp: "2026-11-17T00:00:00" });
+    const file = readStep(out.text);
+    const wall = ofType(file, "IFCWALL").find((entity) => text(entity, 0) === out.report.globalIds["wall-1"]);
+    if (!wall) throw new Error("Missing wall");
+    const sets = ofType(file, "IFCRELDEFINESBYPROPERTIES").filter((rel) => refs(rel, 4).includes(wall.id))
+      .map((rel) => file.entities.get(ref(rel, 5)));
+    const quantitySet = sets.find((set) => text(set, 2) === "Qto_WallBaseQuantities");
+    if (!quantitySet) throw new Error("Missing wall quantities");
+    const width = refs(quantitySet, 5).map((id) => file.entities.get(id)).find((quantity) => text(quantity, 0) === "Width");
+    expect(width?.type).toBe("IFCQUANTITYLENGTH");
+    expect(width?.args[3]).toEqual({ kind: "number", value: 250 });
+  });
+
 });
