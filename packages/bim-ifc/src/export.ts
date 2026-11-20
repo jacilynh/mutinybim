@@ -601,11 +601,12 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
       const section = s.shape === "rect" || s.shape === "oval" ? { width: s.width, height: s.height } : s.shape === "round" ? { diameter: s.diameter } : s.shape === "pipe" ? { diameter: s.nominalMm } : { diameter: s.tradeSizeMm };
       const system = els[el.systemId];
       const systemName = system?.kind === "mep_system" ? system.name.trim() : "";
-      const dimensions = "width" in section ? `${section.width}x${section.height} mm` : `${section.diameter} mm`;
+      const dimensions = `${Object.values(section).map((value) => Math.round(value * 10) / 10).join("x")} mm`;
       const shapeName = s.shape === "oval" || s.shape === "round" ? ` ${s.shape}` : "";
       const name = `${dimensions}${shapeName} ${systemName || cls.classLabel || el.domain}`;
       product = writeElement(el, cls, name, null, placement, geo.sweep(el.start, el.end, section));
       for (const [dimension, value] of Object.entries(section)) {
+        if (!(value > 0)) continue;
         const path = `run.${dimension}`;
         const declared = cls.classId ? registry.field(cls.classId, path) : undefined;
         const provided = cls.classId && fields.getClass(cls.classId) ? fields.field(cls.classId, path) : undefined;

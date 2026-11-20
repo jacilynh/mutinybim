@@ -1,10 +1,11 @@
 /** @jest-environment node */
-import { asElementId, type RunSegment, type RunSize } from "@permitzip/bim-kernel";
+import { asElementId, builtinRegistryBuilder, type RunSegment, type RunSize } from "@permitzip/bim-kernel";
 import { exportIfc, readStep } from "../src";
 import { syntheticModel, PROJECT_ID, TIME_STAMP } from "./c5i-model";
 import { ofType, ref, refs, text } from "./a13a-ifc-support";
 
 it.each([
+  [{ shape: "rect", width: 12 * 25.4, height: 8 * 25.4 }, "304.8x203.2 mm Supply Air 1", { NominalDiameterOrWidth: 304.8, NominalHeight: 203.2 }],
   [{ shape: "rect", width: 400, height: 300 }, "400x300 mm Supply Air 1", { NominalDiameterOrWidth: 400, NominalHeight: 300 }],
   [{ shape: "round", diameter: 250 }, "250 mm round Supply Air 1", { NominalDiameterOrWidth: 250 }],
   [{ shape: "oval", width: 500, height: 200 }, "500x200 mm oval Supply Air 1", { NominalDiameterOrWidth: 500, NominalHeight: 200 }],
@@ -49,4 +50,27 @@ it("uses the generic dimension set for a pipe without a mapped field or system",
   const property = file.entities.get(refs(dimensions, 4)[0] ?? -1);
   expect(text(property, 0)).toBe("diameter");
   expect(property?.args[2]).toEqual({ kind: "typed", type: "IFCPOSITIVELENGTHMEASURE", value: { kind: "number", value: 100 } });
+});
+
+it.each([0, -100])("omits a nonpositive dimension (%s) from positive-length properties", (width) => {
+  const model = syntheticModel();
+  const original = model.elements["duct-1"];
+  if (original?.kind !== "run_segment") throw new Error("Missing fixture run");
+  const run: RunSegment = { ...original, size: { shape: "rect", width, height: 300 } };
+  const out = exportIfc({ model: { ...model, elements: { ...model.elements, [run.id]: run } },
+    project: { id: PROJECT_ID, name: "Synthetic invalid dimension" }, timeStamp: TIME_STAMP });
+  const file = readStep(out.text);
+  const dimensions = ofType(file, "IFCPROPERTYSINGLEVALUE").filter((p) => text(p, 0) === "NominalDiameterOrWidth");
+  expect(dimensions).toHaveLength(0);
+  const height = ofType(file, "IFCPROPERTYSINGLEVALUE").find((p) => text(p, 0) === "NominalHeight");
+  expect(height?.args[2]).toEqual({ kind: "typed", type: "IFCPOSITIVELENGTHMEASURE", value: { kind: "number", value: 300 } });
+});
+
+it("honours a caller registry without the default provider's dimension mappings", () => {
+  const out = exportIfc({ model: syntheticModel(), registry: builtinRegistryBuilder().build(),
+    project: { id: PROJECT_ID, name: "Custom registry" }, timeStamp: TIME_STAMP });
+  const file = readStep(out.text);
+  const names = ofType(file, "IFCPROPERTYSET").map((p) => text(p, 2));
+  expect(names).not.toContain("Pset_DuctSegmentTypeCommon");
+  expect(names).toContain("MutinyBIM_Run");
 });
