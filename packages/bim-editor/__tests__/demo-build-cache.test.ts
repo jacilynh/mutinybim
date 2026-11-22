@@ -16,6 +16,7 @@ describe('the local demo build cache in one server process', () => {
     'rebuilds missing output',
     'keeps good output and recovers after a failed rebuild',
     'retries a failed first build',
+    'keeps the first build when not watching sources',
   ])('%s', async (scenario) => {
     try {
       await run(process.execPath, ['--import', 'tsx', FIXTURE, scenario], { cwd: ROOT })

@@ -49,6 +49,11 @@ export interface BuildOptions {
   readonly tsconfig?: string
   /** The page script to bundle in place of this demo's entry.tsx (another app hosting the editor). */
   readonly entry?: string
+  /**
+   * Check source times again on each call (the default, for local work). Off: keep the first good
+   * build for the life of the process, as a prebuilt image wants, with no per-request disk scan.
+   */
+  readonly watchSources?: boolean
 }
 
 /** One folder per checkout, so two checkouts on one computer don't share a build. */
@@ -196,9 +201,10 @@ export function ensureEditorDemoBuilt(options: BuildOptions = {}): Promise<Build
     return buildEditorDemo({ ...options, outDir })
   })()
   pending.set(outDir, next)
-  // Share only work in flight; the next request must check source mtimes again.
+  // Share only work in flight; the next request must check source mtimes again,
+  // unless the caller serves a fixed build (`watchSources: false`).
   next.then(
-    () => { pending.delete(outDir) },
+    () => { if (options.watchSources !== false) pending.delete(outDir) },
     (err: unknown) => {
       console.error('[editor-demo] build failed', err)
       pending.delete(outDir)

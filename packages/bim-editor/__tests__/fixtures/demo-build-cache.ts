@@ -78,6 +78,15 @@ try {
       assert.equal(builds, 2)
       break
     }
+    case 'keeps the first build when not watching sources': {
+      const fixed = { ...options, watchSources: false }
+      const report = await ensureEditorDemoBuilt(fixed)
+      await edit('document.body.textContent = "after-edit";', report)
+      assert.deepEqual(await ensureEditorDemoBuilt(fixed), report)
+      assert.match(await bundle(), /before-edit/)
+      assert.equal(builds, 1)
+      break
+    }
     default: throw new Error(`Unknown build-cache scenario: ${process.argv[2]}`)
   }
 } finally {
