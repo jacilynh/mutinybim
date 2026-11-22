@@ -1,4 +1,5 @@
 import { elementsOfKind } from "../store";
+import { modelLevels, viewModelLevel } from "../levels";
 import { z } from "zod";
 import { emForCapHeight, textWidth } from "./text-layout";
 import { sizeLabel } from "../routing/rules";
@@ -8,7 +9,7 @@ import { modelToShared, siteOf, formatSharedFt } from "../site";
 import type { DrawingItem } from "../documents";
 import type { Primitive } from "../drawing/sheet";
 import type { BimElement, ModelState, Vec2, ViewElement } from "../types";
-import { organizationOf, type TagLeaderEnd, type TagStyleBox, type TagStyleCategory, type TagStyleUnits } from "../organization/model";
+import { organizationOf, resolveTextStyle, type TagLeaderEnd, type TagStyleBox, type TagStyleCategory, type TagStyleUnits } from "../organization/model";
 import { fieldPaths, fieldText, isRelationshipField } from "../fields/resolver";
 import { fillTemplate, parseFieldTemplate } from "../fields/template";
 import { elbowLeaderPath, elbowLeaderSegments } from "./elbow-leader";
@@ -17,6 +18,7 @@ import { paramNamed } from "../parts";
 import { addOnMarkedPoint, addOnRun, addOnTagCategory, addOnTagText, isAddOnRecord } from "./addon-kinds";
 import { tagFieldAliases } from "./tag-types";
 import { outlineAreaMm2, spaceAreaM2, spaceOutlines } from "../spaces/space-geometry";
+import { partPlanOutline, type PlanOutline } from "../drawing/part-outline";
 import { parseLinkedElementKey } from "../reference-geometry/index-geometry";
 import { linkedAnchorInSection, linkedAnchorItem, linkedAnchorPoint, missingLinkedAnchorWords } from "../reference-geometry/linked-anchors";
 
@@ -246,20 +248,173 @@ function floorOutlineOf(model: Pick<ModelState, "elements">, el: BimElement): re
   return best;
 }
 
+/** Vertical `[z0, z1]` span (mm) of a room or space: its floor elevation up to its ceiling height or the next level above. */
+function areaElevationSpan(model: Pick<ModelState, "elements">, el: BimElement): { readonly z0: number; readonly z1: number } | null {
+  if (el.kind !== "room" && el.kind !== "space") return null;
+  let z0 = 0;
+  if (el.kind === "space" && el.levelId) {
+    z0 = levelZ(model, el.levelId);
+  } else {
+    const lvl = viewModelLevel(model, el.partition?.level);
+    z0 = lvl ? lvl.elevationMm : 0;
+  }
+  const statedHeight = el.kind === "space" && typeof el.ceilingHeightMm === "number" && el.ceilingHeightMm > 0 ? el.ceilingHeightMm : null;
+  if (statedHeight !== null) return { z0, z1: z0 + statedHeight };
+  let nextZ: number | null = null;
+  for (const lvl of modelLevels(model)) {
+    if (lvl.elevationMm > z0 + 100 && (nextZ === null || lvl.elevationMm < nextZ)) nextZ = lvl.elevationMm;
+  }
+  return { z0, z1: nextZ ?? z0 + 3000 };
+}
+
+/** 1D intervals `[u0, u1]` where the section cut ray `cutStart..cutEnd` slices across a closed 2D floor polygon. */
+function slicePolygonAlongCut(poly: readonly Vec2[], cutStart: Vec2, cutEnd: Vec2): Array<readonly [number, number]> {
+  const dx = cutEnd.x - cutStart.x;
+  const dy = cutEnd.y - cutStart.y;
+  const cutLen = Math.hypot(dx, dy);
+  if (cutLen < 1e-3 || poly.length < 3) return [];
+  const ux = dx / cutLen;
+  const uy = dy / cutLen;
+  const nx = -uy;
+  const ny = ux;
+  const hits: number[] = [];
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[j]!;
+    const b = poly[i]!;
+    const da = (a.x - cutStart.x) * nx + (a.y - cutStart.y) * ny;
+    const db = (b.x - cutStart.x) * nx + (b.y - cutStart.y) * ny;
+    if ((da <= 0 && db > 0) || (db <= 0 && da > 0)) {
+      const t = da / (da - db);
+      const px = a.x + (b.x - a.x) * t;
+      const py = a.y + (b.y - a.y) * t;
+      hits.push((px - cutStart.x) * ux + (py - cutStart.y) * uy);
+    }
+  }
+  hits.sort((a, b) => a - b);
+  const out: Array<readonly [number, number]> = [];
+  for (let i = 0; i + 1 < hits.length; i += 2) {
+    const u0 = Math.max(0, hits[i]!);
+    const u1 = Math.min(cutLen, hits[i + 1]!);
+    if (u1 - u0 > 50) out.push([u0, u1]);
+  }
+  return out;
+}
+
+/**
+ * 2D outlines of a room or space in `view`'s own drawing coordinates:
+ * - Floor plans & RCPs: its 2D floor polygon(s) in plan mm.
+ * - Building sections: exact sliced room rectangles `(u0..u1, z0..z1)` where the section cut passes through the room.
+ * - Elevations: projected room rectangles within the view depth `0..depthMm`.
+ */
+export function hostAreaOutlinesInView(
+  model: Pick<ModelState, "elements">,
+  view: ViewElement | null | undefined,
+  el: BimElement,
+): ReadonlyArray<readonly Vec2[]> {
+  if (el.kind !== "room" && el.kind !== "space") return [];
+  const floorPolys: ReadonlyArray<readonly Vec2[]> = el.kind === "room" ? (el.outline.length >= 3 ? [el.outline] : []) : spaceOutlines(model.elements, el).filter((o) => o.length >= 3);
+  if (floorPolys.length === 0) return [];
+  const cut = view?.props?.section;
+  if (!view || (view.viewType !== "section" && view.viewType !== "elevation") || !cut) return floorPolys;
+  const span = areaElevationSpan(model, el);
+  if (!span) return [];
+  const out: Vec2[][] = [];
+  for (const poly of floorPolys) {
+    const slices = slicePolygonAlongCut(poly, cut.start, cut.end);
+    for (const [u0, u1] of slices) {
+      out.push([
+        { x: u0, y: span.z0 },
+        { x: u1, y: span.z0 },
+        { x: u1, y: span.z1 },
+        { x: u0, y: span.z1 },
+      ]);
+    }
+    if (slices.length === 0 && view.viewType === "elevation") {
+      const dx = cut.end.x - cut.start.x;
+      const dy = cut.end.y - cut.start.y;
+      const cutLen = Math.hypot(dx, dy);
+      if (cutLen < 1e-3) continue;
+      const ux = dx / cutLen;
+      const uy = dy / cutLen;
+      const lx = -uy * cut.direction;
+      const ly = ux * cut.direction;
+      let minU = Infinity;
+      let maxU = -Infinity;
+      let minD = Infinity;
+      let maxD = -Infinity;
+      for (const q of poly) {
+        const u = (q.x - cut.start.x) * ux + (q.y - cut.start.y) * uy;
+        const d = (q.x - cut.start.x) * lx + (q.y - cut.start.y) * ly;
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (d < minD) minD = d;
+        if (d > maxD) maxD = d;
+      }
+      if (maxD >= -50 && minD <= cut.depthMm + 50) {
+        const u0 = Math.max(0, minU);
+        const u1 = Math.min(cutLen, maxU);
+        if (u1 - u0 > 50) {
+          out.push([
+            { x: u0, y: span.z0 },
+            { x: u1, y: span.z0 },
+            { x: u1, y: span.z1 },
+            { x: u0, y: span.z1 },
+          ]);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function pointInPoly(pt: Vec2, poly: readonly Vec2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i]!;
+    const b = poly[j]!;
+    const crosses = (a.y > pt.y) !== (b.y > pt.y) && pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y) + a.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+/** True when `pt` lies inside the room or space's area in `view` (plan polygon or section cut rectangle); null when not an area host. */
+export function isPointInsideHostArea(model: Pick<ModelState, "elements">, elementId: string, pt: Vec2, view?: ViewElement | null): boolean | null {
+  const el = model.elements[elementId];
+  if (!el || ("deleted" in el && el.deleted)) return null;
+  if (el.kind !== "room" && el.kind !== "space") return null;
+  const polys = hostAreaOutlinesInView(model, view, el);
+  if (polys.length === 0) return false;
+  return polys.some((poly) => poly.length >= 3 && pointInPoly(pt, poly));
+}
+
 /** An element's insertion point (3D), when it is placed at one. */
 function pointOf(model: Pick<ModelState, "elements">, el: BimElement): Point3 | null {
   switch (el.kind) {
     case "part":
       return { ...el.position, z: levelZ(model, el.levelId) + el.offsetMm };
-    case "column":
-      return { ...el.position, z: UNELEVATED_Z_MM };
+    case "column": {
+      const colLvl = el.placement?.kind === "point" ? levelZ(model, el.placement.levelId) : (viewModelLevel(model, el.partition?.level)?.elevationMm ?? 0);
+      return { ...el.position, z: colLvl + 1500 };
+    }
+    case "opening": {
+      const host = model.elements[el.hostId];
+      const hostZ =
+        host?.kind === "wall" && host.placement?.kind === "line"
+          ? levelZ(model, host.placement.levelId)
+          : (viewModelLevel(model, host?.partition?.level ?? el.partition?.level)?.elevationMm ?? 0);
+      const rawSill = (el as unknown as { readonly values?: Readonly<Record<string, unknown>> }).values?.["opening.sill_mm"];
+      const sillMm = typeof rawSill === "number" ? rawSill : el.openingType === "window" ? 915 : 0;
+      return { ...el.position, z: hostZ + sillMm + el.height / 2 };
+    }
     case "run_fitting":
       return el.position;
     case "room":
     case "space": {
       const outline = floorOutlineOf(model, el);
       const at = outline ? outlineCentroid(outline) : null;
-      return at ? { ...at, z: el.kind === "space" && el.levelId ? levelZ(model, el.levelId) : 0 } : null;
+      const span = areaElevationSpan(model, el);
+      return at && span ? { ...at, z: (span.z0 + span.z1) / 2 } : null;
     }
     default: {
       const at = addOnMarkedPoint(el);
@@ -314,13 +469,30 @@ export function anchorInView(model: Pick<ModelState, "elements">, view: ViewElem
     if (ref.anchor === "end") return pts[pts.length - 1] ?? null;
     return pts[ref.index ?? 0] ?? null;
   }
-  const p = modelAnchor(model, ref);
-  if (!p) return null;
   const cut = view?.props?.section;
-  if (view?.viewType === "section" && cut) {
+  if ((view?.viewType === "section" || view?.viewType === "elevation") && cut) {
+    // Rooms and spaces anchor dead-center inside their actual visible section/elevation cut slice (null when uncut).
+    if (el && (el.kind === "room" || el.kind === "space") && !("deleted" in el && el.deleted)) {
+      const slices = hostAreaOutlinesInView(model, view, el);
+      if (slices.length === 0) return null;
+      let best = slices[0]!;
+      let bestArea = -1;
+      for (const s of slices) {
+        const area = outlineAreaMm2(s);
+        if (area > bestArea) {
+          best = s;
+          bestArea = area;
+        }
+      }
+      return outlineCentroid(best);
+    }
+    const p = modelAnchor(model, ref);
+    if (!p) return null;
     const q = sectionProjector(cut.start, cut.end, cut.direction, cut.depthMm).project(p);
     return { x: q.u, y: q.v };
   }
+  const p = modelAnchor(model, ref);
+  if (!p) return null;
   return { x: p.x, y: p.y };
 }
 
@@ -342,7 +514,7 @@ export function dimensionPoints(model: Pick<ModelState, "elements">, view: ViewE
       }
       if (!found) return stored;
       const cut = view?.props?.section;
-      if (view?.viewType === "section") return cut ? linkedAnchorInSection(found.item, ref.anchor, cut, stored) : stored;
+      if (view?.viewType === "section" || view?.viewType === "elevation") return cut ? linkedAnchorInSection(found.item, ref.anchor, cut, stored) : stored;
       return linkedAnchorPoint(found.item, ref.anchor, stored);
     }
     const at = anchorInView(model, view, ref);
@@ -535,7 +707,7 @@ export function dimensionValues(model: Pick<ModelState, "elements">, view: ViewE
       const ref = spec.refs?.[0];
       const z = ref ? modelAnchor(model, ref)?.z : undefined;
       if (z !== undefined) return [z];
-      return view?.viewType === "section" ? [p0.y] : [];
+      return view?.viewType === "section" || view?.viewType === "elevation" ? [p0.y] : [];
     }
     case "spot_coordinate":
       return [p0.x, p0.y];
@@ -865,9 +1037,13 @@ function styleOfTag(model: Pick<ModelState, "elements">, spec: TagSpec) {
   return organizationOf({ elements: model.elements, connections: [] }).tagStyleById.get(spec.styleId)?.entry ?? null;
 }
 
-/** The tag's cap height on paper: its style's, else its own, else the default. */
+/** The tag's cap height on paper: its style's Text Type (when named), else its style's size, else its own, else the model's assigned tag Text Type, else 2.4 mm. */
 export function tagTextSizeMm(model: Pick<ModelState, "elements">, spec: TagSpec): number {
-  return styleOfTag(model, spec)?.textSizeMm ?? spec.textSizeMm ?? TAG_TEXT_MM;
+  const style = styleOfTag(model, spec);
+  if (style?.textStyleId) return resolveTextStyle({ elements: model.elements, connections: [] }, "tag", style.textStyleId)?.textSizeMm ?? style.textSizeMm;
+  if (style) return style.textSizeMm;
+  if (spec.textSizeMm !== undefined) return spec.textSizeMm;
+  return resolveTextStyle({ elements: model.elements, connections: [] }, "tag")?.textSizeMm ?? 2.4;
 }
 
 /** Whether the tag draws a leader: its style decides when it has one. */
@@ -993,7 +1169,6 @@ export function isGasRun(model: Pick<ModelState, "elements">, el: BimElement): b
   return system?.kind === "mep_system" && system.systemKind === "natural_gas";
 }
 
-const TAG_TEXT_MM = 2.4;
 const TAG_PAD_MM = 1;
 
 /** The words' own width and height on paper before any turn (paper mm). */
@@ -1064,25 +1239,85 @@ export function tagItemBox(model: Pick<ModelState, "elements">, view: ViewElemen
   return tagHeadBox(item.id, tagLines(model, spec) ?? ["?"], toPaper(head), tagTextSizeMm(model, spec), tagRotationDeg(model, view, spec, toPaper), tagShape(model, spec));
 }
 
+/** Outermost crossing of ray `from -> to` with a part's rendered plan symbol outline (model mm); null when none. */
+function symbolRimPoint(outline: readonly PlanOutline[], from: Vec2, to: Vec2): Vec2 | null {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-6) return null;
+  let best = 0;
+  for (const o of outline) {
+    if (o.kind === "seg") {
+      const ex = o.b.x - o.a.x;
+      const ey = o.b.y - o.a.y;
+      const den = dx * ey - dy * ex;
+      if (Math.abs(den) < 1e-12) continue;
+      const wx = o.a.x - from.x;
+      const wy = o.a.y - from.y;
+      const t = (wx * ey - wy * ex) / den;
+      const u = (wx * dy - wy * dx) / den;
+      if (t > best && t <= 1 && u >= -1e-6 && u <= 1 + 1e-6) best = t;
+    } else {
+      const fx = from.x - o.c.x;
+      const fy = from.y - o.c.y;
+      const b = 2 * (fx * dx + fy * dy);
+      const c = fx * fx + fy * fy - o.r * o.r;
+      const disc = b * b - 4 * len2 * c;
+      if (disc < 0) continue;
+      const root = Math.sqrt(disc);
+      const t1 = (-b - root) / (2 * len2);
+      const t2 = (-b + root) / (2 * len2);
+      if (t1 > best && t1 <= 1) best = t1;
+      if (t2 > best && t2 <= 1) best = t2;
+    }
+  }
+  return best > 0 ? { x: from.x + dx * best, y: from.y + dy * best } : null;
+}
+
 /** The tag's element anchor in the view frame (its centreline middle, or insertion). */
 export function tagTarget(model: Pick<ModelState, "elements">, view: ViewElement | null, spec: TagSpec): Vec2 | null {
   return anchorInView(model, view, { elementId: spec.elementId, anchor: "mid" });
+}
+
+/**
+ * Smart leader attachment point in view-model mm: for a placed part in a plan
+ * view, lands cleanly on the nearest outer rim of the rendered plan symbol
+ * facing `towardModel` (the elbow or tag head) so leaders never cross through
+ * a symbol down to its wall-face insertion point. Falls back to `tagTarget`.
+ */
+export function tagLeaderTarget(model: Pick<ModelState, "elements">, view: ViewElement | null, spec: TagSpec, towardModel?: Vec2): Vec2 | null {
+  const base = tagTarget(model, view, spec);
+  if (!base || !towardModel || !view || (view.viewType !== "floor_plan" && view.viewType !== "ceiling_plan")) return base;
+  const el = model.elements[spec.elementId];
+  if (el?.kind !== "part") return base;
+  const { outline, bounds } = partPlanOutline(model as ModelState, el, {
+    scale: view.props?.scale ?? 48,
+    symbolScale: view.props?.symbolScale ?? 1,
+    detail: view.props?.detailLevel ?? "medium",
+  });
+  if (!bounds || outline.length === 0) return base;
+  const center = { x: (bounds.min.x + bounds.max.x) / 2, y: (bounds.min.y + bounds.max.y) / 2 };
+  return symbolRimPoint(outline, center, towardModel) ?? center;
 }
 
 export function drawTag(ctx: AnnotationDrawContext, item: DrawingItem): AnnotationBox[] {
   const spec = item.tag;
   const head = item.points[0];
   if (!spec || !head) return [];
+  const tagStyle = styleOfTag(ctx.model, spec);
+  const textLook = resolveTextStyle(ctx.model, "tag", tagStyle?.textStyleId);
   const size = tagTextSizeMm(ctx.model, spec);
   const leader = tagHasLeader(ctx.model, spec);
-  const lines = tagLines(ctx.model, spec) ?? ["?"];
+  const rawLines = tagLines(ctx.model, spec) ?? ["?"];
+  const lines = textLook?.uppercase ? rawLines.map((l) => l.toUpperCase()) : rawLines;
   const at = ctx.toPaper(head);
   const rotation = tagRotationDeg(ctx.model, ctx.view, spec, ctx.toPaper);
   const shape = tagShape(ctx.model, spec);
   const box = tagHeadBox(item.id, lines, at, size, rotation, shape);
   const { w, h } = tagHeadSize(lines, size);
+  const masked = spec.mask ?? tagStyle?.mask ?? (textLook ? textLook.mask : false);
   // The mask goes down first so the outline and words print over it and the linework drawn before it is hidden.
-  if (spec.mask) {
+  if (masked) {
     const under = tagOutline(shape === "none" ? "box" : shape, w, h).map((p) => add(at, turn(p, rotation)));
     ctx.prims.push({ kind: "fill", points: under, grey: 1 });
   }
@@ -1093,12 +1328,24 @@ export function drawTag(ctx: AnnotationDrawContext, item: DrawingItem): Annotati
   }
   lines.forEach((line, i) => {
     const local = { x: 0, y: -h / 2 + TAG_PAD_MM / 2 + (i + 1) * (size + 1.2) - 0.6 };
-    ctx.prims.push({ kind: "text", at: add(at, turn(local, rotation)), text: line, size, anchor: "middle", ...(rotation !== 0 ? { rotate: rotation } : {}) });
+    ctx.prims.push({
+      kind: "text",
+      at: add(at, turn(local, rotation)),
+      text: line,
+      size,
+      anchor: "middle",
+      ...(rotation !== 0 ? { rotate: rotation } : {}),
+      ...(textLook?.bold ? { bold: true } : {}),
+      ...(textLook?.italic ? { italic: true } : {}),
+      ...(textLook?.fontFamily ? { fontFamily: textLook.fontFamily } : {}),
+      ...(textLook?.color ? { color: textLook.color } : {}),
+    });
   });
   const arrow = tagArrowDirection(ctx.model, ctx.view, spec, ctx.toPaper);
   if (arrow) for (const [a, b] of tagArrowSegments(add(at, turn({ x: 0, y: h / 2 + TAG_ARROW_GAP_MM }, rotation)), arrow, Math.min(Math.max(w - TAG_PAD_MM * 2, 6), 12))) ctx.prims.push({ kind: "line", a, b, pen: "thin" });
   if (leader) {
-    const target = tagTarget(ctx.model, ctx.view, spec);
+    const toward = spec.elbow !== undefined && spec.elbow !== "auto" ? spec.elbow : head;
+    const target = tagLeaderTarget(ctx.model, ctx.view, spec, toward);
     if (target) {
       const to = ctx.toPaper(target);
       if (spec.elbow !== undefined) {

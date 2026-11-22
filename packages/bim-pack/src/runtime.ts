@@ -136,7 +136,7 @@ export { declaredPoint, type KnownPoint } from "./known-point";
 export * from "@permitzip/bim-kernel/placement";
 export * from "@permitzip/bim-kernel/elements";
 
-export { CONNECTION_QUANTITY_CHECK_POINT, PIPE_RUN_CHECK_POINT, SERVES_RULE_POINT, STARTER_CONNECTION_TYPE_POINT, SYSTEM_LABEL_POINT, type ConnectionQuantityCheckDef, type PipeRunCheckDef, type ServesRuleDef, type SystemLabelDef } from "@permitzip/bim-kernel";
+export { CONNECTION_QUANTITY_CHECK_POINT, PIPE_RUN_CHECK_POINT, SERVES_RULE_POINT, SERVICE_LINE_CODE_POINT, STARTER_CONNECTION_TYPE_POINT, SYSTEM_LABEL_POINT, type ConnectionQuantityCheckDef, type PipeRunCheckDef, type ServesRuleDef, type ServiceLineCodeDef, type SystemLabelDef } from "@permitzip/bim-kernel";
 // Contract 1.9.0 (round 11 wave 1): one record registry (K11), copies (L11), the problem list (F11), stages and confidence (G11).
 export { type PackCommandClaim, claimedCommandCase, type HostedPlacementFace, type KindRecordRead, kindRowOf, KERNEL_KIND_ROWS } from "@permitzip/bim-kernel";
 export { type FindingRef, dispositionFromLintAcceptance } from "@permitzip/bim-kernel";
@@ -151,7 +151,7 @@ export { type KindSymbolFace, type KindSymbol, type KindTagTextFace, type KindPi
 export { FITTING_FAMILY_POINT, type FittingFamilyRow, type FittingSlotDefault, packFittingFamily, packFittingFamilies, packFittingDefault } from "@permitzip/bim-kernel";
 export { TYPICALS_MIRROR_FEATURE } from "@permitzip/bim-kernel";
 // Contract 1.11.0 (round 13 wave 0).
-export { type KindPlanGraphicsFace, type PlanGraphic, type PlanPen, type PlanGraphicsContext } from "@permitzip/bim-kernel";
+export { type KindPlanGraphicsFace, type PlanGraphic, type PlanPen, type PlanGraphicsContext, type KindSectionGraphicsFace, type SectionGraphic, type SectionGraphicsContext } from "@permitzip/bim-kernel";
 export { DATUM_POINT, type DatumRow, type DatumSnapLine, datumRow, datumSnapLines } from "@permitzip/bim-kernel";
 export { LINE_JOIN_POINT, type LineJoinRow, type JoinStyle, type EndCleanup, JOIN_STYLES, DISALLOW_JOIN_KEYS, lineJoinRow, endCleanupsOf } from "@permitzip/bim-kernel";
 export { HOST_VOID_POINT, type HostVoidRow, type HostVoid, hostVoidRow, voidsOf } from "@permitzip/bim-kernel";
@@ -178,3 +178,4 @@ export { GEOMETRY_SOLID_PROGRAM_2_FEATURE, PART_MODEL_SCHEMA_2, PART_SYMBOL_VIEW
 export { DOCUMENTS_SHEET_SETS_FEATURE, SCHEDULES_EDIT_STEPS_FEATURE, WALLS_TOP_CONSTRAINT_FEATURE, PARTS_CLASS_SOLIDS_FEATURE, type ScheduleEditStep } from "@permitzip/bim-kernel";
 export { STARTER_ELEMENT_TYPE_POINT, type StarterElementTypeRow } from "@permitzip/bim-kernel";
 export { SURFACE_FACE_POINT, SURFACE_FACE_ROLES, WALLS_SURFACE_BINDING_FEATURE, surfaceFaceRow, type SurfaceFaceRow, type SurfaceFaceRole, type FacePair } from "@permitzip/bim-kernel";
+export { MATERIAL_POINT, MATERIAL_ID_KEY, MATERIAL_PATTERNS, MATERIAL_CUT_HATCHES, MATERIAL_SURFACE_HATCHES, allMaterials, materialOf, parseHexColor, materialCutGrey, resolveElementMaterial, type MaterialDef, type MaterialPattern, type MaterialCutHatch, type MaterialSurfaceHatch } from "@permitzip/bim-kernel";

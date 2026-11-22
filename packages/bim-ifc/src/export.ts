@@ -5,6 +5,7 @@ import {
   activeClassRegistry,
   activeServiceRegistry,
   gridAxisFamily,
+  fieldProviderRegistry,
   hostLineOf,
   hostVoidsOf,
   ifcRelationRowsFor,
@@ -38,6 +39,7 @@ import {
   type LoadPointElement,
   type MepSystem,
   type ModelState,
+  type ParamValue,
   type PartInstance,
   type PartTypeElement,
   type PortRef,
@@ -53,7 +55,7 @@ import { elementTypeOf } from "@permitzip/bim-kernel/elements";
 import { LEGACY_QUANTITY_KEYS, QUANTITY_BINDINGS } from "@permitzip/bim-units";
 import { GeometryWriter, type Vec3 } from "./geometry";
 import { derivedIfcGuid, isIfcGuid, isUuid, projectNamespace, relationshipIfcGuid, uuidToIfcGuid } from "./guid";
-import { PROXY, resolveIfcClass, type ResolvedIfcClass } from "./mapping";
+import { PROXY, primaryClass, resolveIfcClass, type ResolvedIfcClass } from "./mapping";
 import { ParameterHomes, PropertyBag, baselineParameterHomes, registryParameterHomes, writeSets, type ParameterHome, type PropertyInput } from "./properties";
 import { ownAttributes, predefinedTypes } from "./schema-ifc4x3";
 import { $, bool, en, int, list, opt, real, str, serializeStep, StepGraph, type StepRef, type StepValue } from "./step";
@@ -250,6 +252,7 @@ interface Product {
 export function exportIfc(opts: IfcExportOptions): IfcExportResult {
   const { model } = opts;
   const registry = opts.registry ?? activeClassRegistry();
+  const fields = opts.registry ?? fieldProviderRegistry();
   const services = opts.services ?? activeServiceRegistry();
   const derivedRules = new Map(activePackSet().items(DERIVED_ZONE_RULE_POINT).map((r) => [r.id, r]));
   // A zone purpose row may state its IFC home (`ifc`, read tolerantly: the purpose point's v1 shape has no such field yet).
@@ -258,7 +261,17 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
     const home = zoneHomeOf(Reflect.get(p, "ifc"));
     if (home) purposeHomes.set(p.id, home);
   }
-  const homes = new ParameterHomes([...(opts.parameterHomes ?? []), ...registryParameterHomes(withPackParameters(registry)), ...baselineParameterHomes()]);
+  const parameterRegistry = withPackParameters(registry);
+  const homes = new ParameterHomes([...(opts.parameterHomes ?? []), ...registryParameterHomes(parameterRegistry), ...baselineParameterHomes()]);
+  const parameterUnits = new Map<string, string>();
+  for (const cls of parameterRegistry.listClasses({ includeAbstract: true })) {
+    for (const field of parameterRegistry.fieldsFor(cls.id)) {
+      if (!field.storedUnit) continue;
+      for (const key of [field.key ?? field.path, field.path, ...(field.aliases ?? [])]) {
+        if (!parameterUnits.has(key)) parameterUnits.set(key, field.storedUnit);
+      }
+    }
+  }
   const warnings: string[] = [];
   const missingProxyClasses = new Map<string, number>();
   const warn = (s: string) => warnings.push(s);
@@ -331,8 +344,18 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
   };
   const frameOf = (levelId: string | null): StepRef => (levelId ? (storeys.get(levelId)?.placement ?? buildingPlacement) : buildingPlacement);
 
+  const parameterValues = (bag: PropertyBag, values: Readonly<Record<string, ParamValue>>, fallbackSet?: string) => {
+    for (const [key, value] of Object.entries(values).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+      const input: PropertyInput = typeof value === "number" ? { kind: "number", name: key, value, unit: parameterUnits.get(key) } : typeof value === "boolean" ? { kind: "bool", name: key, value } : { kind: "text", name: key, value };
+      bag.put(homes.find([key]), input, fallbackSet);
+    }
+  };
+
   // Properties attach after the object exists; collected here and written per object.
   const attachSets = (objectRef: StepRef, objectGuid: string, key: string, bag: PropertyBag) => {
+    const element = els[key];
+    // Parts and load points have their own value schemas and exporters.
+    if (element && element.kind !== "part" && element.kind !== "load_point" && "values" in element && element.values) parameterValues(bag, element.values);
     if (bag.empty) return [];
     const written = writeSets(g, units, bag, (name) => guids.derived(`set:${key}:${name}`));
     for (const w of written) {
@@ -576,7 +599,19 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
       const placement = geo.placement(frame, geo.axis({ x: 0, y: 0, z: 0 }));
       const s = el.size;
       const section = s.shape === "rect" || s.shape === "oval" ? { width: s.width, height: s.height } : s.shape === "round" ? { diameter: s.diameter } : s.shape === "pipe" ? { diameter: s.nominalMm } : { diameter: s.tradeSizeMm };
-      product = writeElement(el, cls, null, null, placement, geo.sweep(el.start, el.end, section));
+      const system = els[el.systemId];
+      const systemName = system?.kind === "mep_system" ? system.name.trim() : "";
+      const dimensions = `${Object.values(section).map((value) => Math.round(value * 10) / 10).join("x")} mm`;
+      const shapeName = s.shape === "oval" || s.shape === "round" ? ` ${s.shape}` : "";
+      const name = `${dimensions}${shapeName} ${systemName || cls.classLabel || el.domain}`;
+      product = writeElement(el, cls, name, null, placement, geo.sweep(el.start, el.end, section));
+      for (const [dimension, value] of Object.entries(section)) {
+        if (!(value > 0)) continue;
+        const path = `run.${dimension}`;
+        const declared = cls.classId ? registry.field(cls.classId, path) : undefined;
+        const provided = cls.classId && fields.getClass(cls.classId) ? fields.field(cls.classId, path) : undefined;
+        bag.put((declared ?? provided)?.ifc ?? null, { kind: "number", name: dimension, value, unit: "mm", measure: "IFCPOSITIVELENGTHMEASURE" }, "MutinyBIM_Run");
+      }
     } else {
       // Every other kind: placed at its stated point, with a body only where the kernel states a box.
       const pos: unknown = Reflect.get(el, "position");
@@ -590,10 +625,7 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
     const elementType = el.kind === "part" ? null : elementTypeOf(els, el);
     if (elementType) {
       const tb = new PropertyBag();
-      for (const [key, v] of Object.entries(elementType.values ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
-        const input: PropertyInput = typeof v === "number" ? { kind: "number", name: key, value: v } : typeof v === "boolean" ? { kind: "bool", name: key, value: v } : { kind: "text", name: key, value: String(v) };
-        tb.put(homes.find([key]), input, "MutinyBIM_Type");
-      }
+      parameterValues(tb, elementType.values ?? {}, "MutinyBIM_Type");
       writeType(`etype:${elementType.id}|${cls.entity}`, cls.typeEntity ?? "IfcBuildingElementProxyType", cls.predefinedType, elementType.name, null, tb).members.push(product.ref);
     }
     organizationSets(bag, el);
@@ -948,6 +980,18 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
     bag.set("MutinyBIM_Circuit", { kind: "text", name: "Role", value: link.role });
     bag.set("MutinyBIM_Circuit", { kind: "text", name: "Adapter", value: adapter });
     if (link.source.positions.length > 0) bag.set("MutinyBIM_Circuit", { kind: "text", name: "Positions", value: link.source.positions.join(",") });
+    const cls = primaryClass(registry, index, link);
+    for (const field of cls && fields.getClass(cls.id) ? fields.fieldsFor(cls.id) : []) {
+      if (!field.ifc || !field.read) continue;
+      const value = field.read(link, { elements: els });
+      if (typeof value === "number" && Number.isFinite(value)) {
+        bag.put(field.ifc, { kind: "number", name: field.label, value, unit: field.unit });
+      } else if (typeof value === "boolean") {
+        bag.put(field.ifc, { kind: "bool", name: field.label, value });
+      } else if (typeof value === "string") {
+        bag.put(field.ifc, { kind: "text", name: field.label, value });
+      }
+    }
     attachSets(ref, guid, link.id, bag);
     servesSpaces(ref, guid, link.members.flatMap((m) => [...(zonesServedBy.get(m.elementId) ?? []), ...(plannedSpaceOf(m.elementId) ? [plannedSpaceOf(m.elementId) ?? ""] : [])]));
   }

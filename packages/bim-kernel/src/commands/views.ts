@@ -70,6 +70,7 @@ import { UNIT_CODES, type UnitCode } from "../registry/units";
 import { diagramDefinitionSchema } from "../diagrams/definition";
 import { SYSTEM_LINE_PATTERNS } from "../routing/system-graphics";
 import { categoryOverridesWritable } from "../categories/feature";
+import { VIEW_SCHEMATIC_DETAIL_FEATURE, VIEW_SYMBOL_SCALE_FEATURE } from "../categories/types";
 import { isRegistryIdShape } from "../ids";
 import { diagramItemsOf } from "../diagrams/evaluate";
 import { diagramKindStoreRefusal } from "../diagrams/kinds";
@@ -104,6 +105,9 @@ const sectionSchema = z.object({
   end: vec2,
   direction: z.union([z.literal(1), z.literal(-1)]),
   depthMm: z.number().positive().max(300000),
+  headExtMm: z.number().finite().min(-50000).max(50000).optional(),
+  tailExtMm: z.number().finite().min(-50000).max(50000).optional(),
+  splitGap: z.boolean().optional(),
 });
 
 
@@ -214,6 +218,8 @@ const categoryOverrideSchema = z
     planSymbol: z.boolean(),
     maskBeneath: z.boolean(),
     transparency: z.number().finite().min(0).max(1),
+    detailLevel: z.enum(["coarse", "medium", "fine"]),
+    singleLineBelowMm: z.number().finite().min(0).max(3000),
   })
   .partial()
   .strict();
@@ -238,6 +244,9 @@ const viewPropsPatchObject = z
     linkedHiddenLines: z.boolean(),
     linkedMinObjectMm: z.number().finite().min(0).max(3000),
     detailLevel: z.enum(["coarse", "medium", "fine"]),
+    showLineCodes: z.boolean(),
+    /** Plans: multiplier for annotative paper-space symbols and `minPaperMm` floors (0.5–3.0). */
+    symbolScale: z.number().finite().min(0.5).max(3),
     visualStyle: z.enum(VISUAL_STYLES),
     showHiddenLines: z.boolean(),
     hiddenLineCategories: z.array(z.enum(VIEW_CATEGORIES)).max(VIEW_CATEGORIES.length),
@@ -250,6 +259,8 @@ const viewPropsPatchObject = z
     showCropBox: z.boolean(),
     annotationCrop: z.boolean(),
     annotationCropOffsetMm: z.number().finite().min(0).max(100),
+    levelLeftExtMm: z.number().finite().min(-20).max(120),
+    levelRightExtMm: z.number().finite().min(-20).max(120),
     phaseId: id,
     phaseFilterId: id,
     groupDisplay: z.record(id, z.enum(["show", "halftone", "hide"])),
@@ -310,7 +321,7 @@ const documentRecord = z.discriminatedUnion("kind", [
     ...base,
     kind: z.literal("view"),
     name,
-    viewType: z.enum(["floor_plan", "ceiling_plan", "section", "three_d", "schedule", "detail"]),
+    viewType: z.enum(["floor_plan", "ceiling_plan", "section", "elevation", "three_d", "schedule", "detail"]),
     cropMin: vec2,
     cropMax: vec2,
     props: viewPropsPatchObject.extend({ discipline: disciplineSchema, workingAngleDeg: z.number().finite().min(-45).max(45), viewBottomMm: z.number().finite().min(-30000).max(30000), viewTopMm: z.number().finite().min(0).max(60000), ...view3dPropsShape }).partial().optional(),
@@ -323,7 +334,7 @@ const documentRecord = z.discriminatedUnion("kind", [
     viewIds: z.array(id).max(500),
     props: z.object({ titleBlock: z.enum(TITLE_BLOCK_TYPES).optional(), titleBlockRow: titleBlockRowSchema.optional(), fields: fields.optional(), revisions: revisionsSchema.optional() }).optional(),
   }),
-  z.object({ ...base, kind: z.literal("viewport"), sheetId: id, viewId: id, center: vec2, size: vec2, scale, northArrow: z.boolean().optional() }),
+  z.object({ ...base, kind: z.literal("viewport"), sheetId: id, viewId: id, center: vec2, size: vec2, scale, northArrow: z.boolean().optional(), titleOffsetMm: vec2.optional(), titleRuleMm: z.number().finite().min(20).max(600).optional() }),
   z.object({
     ...base,
     kind: z.literal("drawing_item"),
@@ -363,7 +374,7 @@ export const viewCommandSchemas = [
     type: z.literal("create_view"),
     viewId: id,
     name,
-    viewType: z.enum(["floor_plan", "ceiling_plan", "section", "three_d", "detail", "schedule"]),
+    viewType: z.enum(["floor_plan", "ceiling_plan", "section", "elevation", "three_d", "detail", "schedule"]),
     crop: crop.optional(),
     props: viewPropsPatch.optional(),
   }),
@@ -387,6 +398,9 @@ export const viewCommandSchemas = [
     showCropBox: z.boolean().optional(),
     annotationCrop: z.boolean().optional(),
     annotationCropOffsetMm: z.number().finite().min(0).max(100).optional(),
+    levelLeftExtMm: z.number().finite().min(-20).max(120).optional(),
+    levelRightExtMm: z.number().finite().min(-20).max(120).optional(),
+    section: sectionSchema.optional(),
     /** Sections only: how far beyond the cut line the section sees, mm. */
     farClipMm: z.number().positive().max(300000).optional(),
     /** Placed on a sheet: keep the viewport's centre where it is instead of moving it so the model stays put on paper. */
@@ -416,13 +430,15 @@ export const viewCommandSchemas = [
     revisions: revisionsSchema.optional(),
   }),
   z.object({ type: z.literal("delete_sheet"), sheetId: id }),
-  z.object({ type: z.literal("place_viewport"), viewportId: id, sheetId: id, viewId: id, center: vec2, scale: scale.optional() }),
+  z.object({ type: z.literal("place_viewport"), viewportId: id, sheetId: id, viewId: id, center: vec2, scale: scale.optional(), titleOffsetMm: vec2.optional(), titleRuleMm: z.number().finite().min(20).max(600).optional() }),
   z.object({ type: z.literal("move_viewport"), viewportId: id, center: vec2 }),
   /** Drag the frame's edges: the view's crop box follows at the viewport's scale. `center` moves the frame too (one edge dragged). */
   z.object({ type: z.literal("resize_viewport"), viewportId: id, size: vec2, center: vec2.optional() }),
   z.object({ type: z.literal("set_viewport_scale"), viewportId: id, scale }),
   /** Show or hide the viewport's north arrow (it turns itself to true north). */
   z.object({ type: z.literal("set_viewport_north_arrow"), viewportId: id, show: z.boolean() }),
+  /** Move a placed viewport's title block on its sheet and/or adjust its horizontal title rule length (Revit viewport title grips). */
+  z.object({ type: z.literal("set_viewport_title"), viewportId: id, titleOffsetMm: vec2.optional(), titleRuleMm: z.number().finite().min(20).max(600).nullable().optional() }),
   z.object({ type: z.literal("remove_viewport"), viewportId: id }),
   z.object({
     type: z.literal("add_drawing_item"),
@@ -791,6 +807,8 @@ function checkCategoryOverridesPatch(patch: z.infer<typeof viewPropsPatch> | und
   const overrides = patch?.categoryOverrides;
   if (overrides === undefined || Object.keys(overrides).length === 0) return;
   if (!categoryOverridesWritable()) fail("This model server can't save per-category graphics yet, so the change wasn't made. Showing, hiding and pens for the standard categories (Duct, Electrical devices…) still save; an administrator can update the model server.", [viewId]);
+  const usesSchematicDetail = Object.values(overrides).some((ov) => ov.detailLevel !== undefined || ov.singleLineBelowMm !== undefined);
+  if (usesSchematicDetail && !peerReads(VIEW_SCHEMATIC_DETAIL_FEATURE)) fail("Per-category detail levels and single-line size thresholds can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
 }
 
 /** A diagram kind is written only when a row in force draws it and the peers read it; a view already holding one keeps it untouched. */
@@ -803,14 +821,16 @@ function checkDiagramKindPatch(patch: z.infer<typeof viewPropsPatch> | undefined
 
 function checkProps(viewType: ViewElement["viewType"], props: ViewProps, viewId: string): void {
   if ((viewType === "floor_plan" || viewType === "ceiling_plan") && !props.level) fail("A plan needs a level. Pick the level it shows.", [viewId]);
-  if (viewType === "section") {
+  if (viewType === "section" || viewType === "elevation") {
     const cut = props.section;
-    if (!cut) fail("A section needs a cut line. Draw it in a plan view.", [viewId]);
-    if (sectionLength(cut) < MIN_SECTION_MM) fail("The section cut line is too short. Draw it at least 1 ft long.", [viewId]);
+    if (!cut) fail(`A ${viewType} needs a cut line. Draw it in a plan view.`, [viewId]);
+    if (sectionLength(cut) < MIN_SECTION_MM) fail(`The ${viewType} line is too short. Draw it at least 1 ft long.`, [viewId]);
   }
-  if (viewType !== "section" && props.section) fail("Only section views have a cut line.", [viewId]);
+  if (viewType !== "section" && viewType !== "elevation" && props.section) fail("Only section and elevation views have a cut line.", [viewId]);
   const isPlan = viewType === "floor_plan" || viewType === "ceiling_plan";
   if (props.diagram?.hints?.faultCurrent !== undefined && !peerReads(DIAGRAM_FAULT_CURRENT_FEATURE)) fail("Show fault current can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
+  if (props.showLineCodes !== undefined && !peerReads(VIEW_SCHEMATIC_DETAIL_FEATURE)) fail("Inline service code settings can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
+  if (props.symbolScale !== undefined && !peerReads(VIEW_SYMBOL_SCALE_FEATURE)) fail("View symbol scale can't be saved yet: the model server this model is open on is an older version. Try again once it is updated.", [viewId]);
   if (!isPlan && (props.viewBottomMm !== undefined || props.viewTopMm !== undefined)) fail("Only plans have a top and bottom to what they show. A section's reach is its far clip depth.", [viewId]);
   if (isPlan && props.viewTopMm !== undefined && props.viewTopMm < (props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM)) fail(`The top of the view must be at or above the cut height (${Math.round((props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM) / 30.48) / 10} ft).`, [viewId]);
   if (isPlan && viewType === "floor_plan" && props.viewBottomMm !== undefined && props.viewBottomMm > (props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM)) fail(`The bottom of the view must be at or below the cut height (${Math.round((props.cutHeightMm ?? DEFAULT_CUT_HEIGHT_MM) / 30.48) / 10} ft).`, [viewId]);
@@ -1004,7 +1024,7 @@ function checkPoints(shape: DrawingItem["shape"], points: readonly Vec2[], text:
   if (need === 2 && a && b && distance(a, b) < 0.5) fail(`The ${shape} is too small to see. Drag it out further.`, [itemId]);
 }
 
-const MODEL_VIEW_TYPES: ReadonlySet<string> = new Set(["floor_plan", "ceiling_plan", "section"]);
+const MODEL_VIEW_TYPES: ReadonlySet<string> = new Set(["floor_plan", "ceiling_plan", "section", "elevation"]);
 
 /** A callout names a live plan, section or detail view other than the one it is drawn in, and its box has some size. */
 function checkCallout(reader: TrackedReader, shape: DrawingItem["shape"], spec: DrawingItem["callout"], ownerId: string, itemId: string, points: readonly Vec2[]): void {
@@ -1240,7 +1260,7 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
           cropMin = roundVec(command.crop.min);
           cropMax = roundVec(command.crop.max);
           authored.push({ elementId: view.id, field: F.crop, value: canonicalJson({ min: cropMin, max: cropMax }) });
-        } else if (view.viewType === "section" && command.props.section) {
+        } else if ((view.viewType === "section" || view.viewType === "elevation") && command.props.section) {
           // A moved cut line re-crops along its new length.
           const c = sectionDefaultCrop({ props });
           cropMin = c.min;
@@ -1262,10 +1282,10 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
         const view = live(reader, command.viewId, "view", "The view");
         if (view.viewType === "schedule") fail("A schedule is always as big as its rows; it has no crop box. Change its columns or filters instead.", [view.id]);
         if (command.crop && command.fit) fail("Send a crop box or ask to fit it to the content, not both.", [view.id]);
-        if (command.farClipMm !== undefined && view.viewType !== "section") fail("Only sections have a far clip depth.", [view.id]);
+        if (command.farClipMm !== undefined && view.viewType !== "section" && view.viewType !== "elevation") fail("Only sections and elevations have a far clip depth.", [view.id]);
         const items = viewContentItems(model, view);
         let props: ViewProps = view.props ?? {};
-        const setProp = <K extends "cropView" | "showCropBox" | "annotationCrop" | "annotationCropOffsetMm">(key: K, value: ViewProps[K] | undefined) => {
+        const setProp = <K extends "cropView" | "showCropBox" | "annotationCrop" | "annotationCropOffsetMm" | "levelLeftExtMm" | "levelRightExtMm">(key: K, value: ViewProps[K] | undefined) => {
           if (value === undefined) return;
           props = { ...props, [key]: value };
           authored.push({ elementId: view.id, field: F.prop(key), value: canonicalJson(value) });
@@ -1274,6 +1294,12 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
         setProp("showCropBox", command.showCropBox);
         setProp("annotationCrop", command.annotationCrop);
         setProp("annotationCropOffsetMm", command.annotationCropOffsetMm);
+        setProp("levelLeftExtMm", command.levelLeftExtMm);
+        setProp("levelRightExtMm", command.levelRightExtMm);
+        if (command.section !== undefined) {
+          props = { ...props, section: command.section };
+          authored.push({ elementId: view.id, field: F.prop("section"), value: canonicalJson(props.section) });
+        }
         if (command.farClipMm !== undefined && props.section) {
           props = { ...props, section: { ...props.section, depthMm: round(command.farClipMm) } };
           authored.push({ elementId: view.id, field: F.prop("section"), value: canonicalJson(props.section) });
@@ -1399,6 +1425,8 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
           center: roundVec(command.center),
           size: framePaperSize(model, view, viewWindowIn(model, view), s),
           scale: s,
+          ...(command.titleOffsetMm ? { titleOffsetMm: roundVec(command.titleOffsetMm) } : {}),
+          ...(command.titleRuleMm !== undefined ? { titleRuleMm: round(command.titleRuleMm) } : {}),
           partition: sheet.partition,
         };
         checkViewport(sheet, vp);
@@ -1460,6 +1488,28 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
         authored.push({ elementId: vp.id, field: F.northArrow, value: String(command.show) });
         break;
       }
+      case "set_viewport_title": {
+        const vp = live(reader, command.viewportId, "viewport", "The viewport");
+        let next = vp;
+        if (command.titleOffsetMm !== undefined) {
+          const titleOffsetMm = roundVec(command.titleOffsetMm);
+          next = { ...next, titleOffsetMm };
+          authored.push({ elementId: vp.id, field: F.titleOffsetMm, value: canonicalJson(titleOffsetMm) });
+        }
+        if (command.titleRuleMm !== undefined) {
+          if (command.titleRuleMm === null) {
+            const { titleRuleMm: _drop, ...rest } = next;
+            next = rest;
+            authored.push({ elementId: vp.id, field: F.titleRuleMm, value: "null" });
+          } else {
+            const titleRuleMm = round(command.titleRuleMm);
+            next = { ...next, titleRuleMm };
+            authored.push({ elementId: vp.id, field: F.titleRuleMm, value: canonicalJson(titleRuleMm) });
+          }
+        }
+        write(next);
+        break;
+      }
       case "remove_viewport": {
         const vp = live(reader, command.viewportId, "viewport", "The viewport");
         const sheet = reader.find(vp.sheetId);
@@ -1483,7 +1533,7 @@ export function executeViewCommand(model: ModelState, command: ViewCommand): Exe
         if (command.shape === "figure" && (!onSheet || !command.figure)) fail(onSheet ? "A figure needs its chart or picture." : "Charts and pictures go on a sheet.", [command.ownerId], onSheet ? "invalid_value" : "wrong_kind");
         if (command.figure && command.shape !== "figure") fail("Only a figure takes a chart or picture.", [command.itemId]);
         if (command.shape === "field_block") fail("Place a live field block with add_field_block; it checks the template.", [command.itemId]);
-        if (command.shape === "callout" && !(owner.kind === "view" && (owner.viewType === "floor_plan" || owner.viewType === "ceiling_plan" || owner.viewType === "section"))) fail("Callouts mark part of a plan or a section, so they go in one.", [command.ownerId], "wrong_kind");
+        if (command.shape === "callout" && !(owner.kind === "view" && (owner.viewType === "floor_plan" || owner.viewType === "ceiling_plan" || owner.viewType === "section" || owner.viewType === "elevation"))) fail("Callouts mark part of a plan, section or elevation, so they go in one.", [command.ownerId], "wrong_kind");
         const points = command.points.map(roundVec);
         checkPoints(command.shape, points, command.text, command.itemId, command.dim, command.tag);
         checkCallout(reader, command.shape, command.callout, owner.id, command.itemId, points);

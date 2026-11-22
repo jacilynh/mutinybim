@@ -22,6 +22,7 @@ export * from "./mounting-plane";
 export * from "./routing/flex";
 export * from "./routing/levels-across";
 export * from "./library/builtin";
+export * from "./library/refresh";
 export * from "./library/revit-convert";
 export * from "./canonical";
 export * from "./partition";
@@ -178,6 +179,7 @@ export type { Perimeter } from "./propose/perimeter";
 export * from "./catalog/entry-point";
 export * from "./layout/diagram-layout-point";
 export * from "./layout/view-graphics-point";
+export { PartLabelIndex, drawPartSymbol, partPlanOutline, type DrawPartSymbolOptions, type FillFn, type PartLabelBox, type PartLabelStore, type PlanOutline } from "./drawing/runs";
 export type * from "./connections/faces";
 export type * from "./registry/kind-row-faces";
 export { kindRowFaceProblems } from "./registry/kind-row-faces";
@@ -239,3 +241,5 @@ export * from "./elements/starter-types";
 // Nov 7 follow-ups: drag one end of a wall (or any joinable line); the lines joined at that end follow.
 export { lineEndCommandSchemas, isLineEndCommand, type LineEndCommand } from "./joins/end-commands";
 export { joinedEndFollowers, carryJoinedEndsOfReshape } from "./joins/carry";
+// Shared material definitions (`kernel.material` v1): 2D plan/section poché and 3D appearance.
+export * from "./materials";

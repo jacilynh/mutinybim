@@ -5,7 +5,7 @@ import { clientOnly as dynamic } from '@permitzip/bim-editor/client-only'
 import { useEditorNavigation } from '@permitzip/bim-editor/host'
 import { toast } from 'sonner'
 import { RefreshCw, Wind, X, ArrowLeft } from 'lucide-react'
-import { AUTO_TAG_CATEGORIES, ORGANIZATION_ZONE, elementsOfKind, planAutoTags, runLabel, type RunFitting, type RunSegment, SYSTEM_KINDS, displayContextOf, documentIndex, viewCamera3d, type Aabb3, normalizeLevelName, organizationOf, sheetDependsOn, sheetViewports, type Actor, type DisplayContext, type GroupVisibility, type ModelState, type PartInstance, type PartTypeDefinition, type SectionCut, type Sheet, type Vec2, type ViewElement, originPointPosition, viewFloorMm, viewModelLevel, canonicalViewLevel, modelLevels, viewRotationDeg, type OriginPoint, diagramKindLabel, type StoredDiagramKind, type ScheduleCategory, type ElementId, type WorkFrame, asElementId, type AuthorRef, type BranchRef, parseBranchModelId, type SubmittalCommand, matchingPlanCrop, projectParametersOf } from '@permitzip/bim-kernel'
+import { AUTO_TAG_CATEGORIES, ORGANIZATION_ZONE, elementsOfKind, lockOf, planAutoTags, runLabel, type RunFitting, type RunSegment, SYSTEM_KINDS, displayContextOf, documentIndex, viewCamera3d, type Aabb3, normalizeLevelName, organizationOf, sheetDependsOn, sheetViewports, type Actor, type DisplayContext, type GroupVisibility, type ModelState, type PartInstance, type PartTypeDefinition, type SectionCut, type Sheet, type Vec2, type ViewElement, originPointPosition, viewFloorMm, viewModelLevel, canonicalViewLevel, modelLevels, viewRotationDeg, type OriginPoint, diagramKindLabel, type StoredDiagramKind, type ScheduleCategory, type ElementId, type WorkFrame, asElementId, type AuthorRef, type BranchRef, parseBranchModelId, type SubmittalCommand, matchingPlanCrop, projectParametersOf } from '@permitzip/bim-kernel'
 import type { ConnectionStatus, Presence, SaveState } from '@permitzip/bim-sync'
 import { type ConnectionProblem } from './operator-messages'
 import { SHEET_FIRM_NAME, type SheetTitle } from '../contracts/building-model/sheet-title'
@@ -68,6 +68,7 @@ const ConstructionStagesDialog = dynamic(() => import('./construction/Constructi
 const EquipmentListDialog = dynamic(() => import('./equipment-list/EquipmentListDialog').then((m) => m.EquipmentListDialog), { ssr: false })
 const AddonsPreview = dynamic(() => import('./settings/AddonsPreview').then((m) => m.AddonsPreview), { ssr: false })
 const TagStylesDialog = dynamic(() => import('./organization/TagStylesDialog').then((m) => m.TagStylesDialog), { ssr: false })
+const TextStylesDialog = dynamic(() => import('./organization/TextStylesDialog').then((m) => m.TextStylesDialog), { ssr: false })
 const ManageGroupsDialog = dynamic(() => import('./organization/ManageGroupsDialog').then((m) => m.ManageGroupsDialog), { ssr: false })
 const NewListScheduleDialog = dynamic(() => import('./schedules/NewListScheduleDialog').then((m) => m.NewScheduleWindow), { ssr: false })
 const SheetFigureDialog = dynamic(() => import('./views-sheets/SheetFigureDialog').then((m) => m.SheetFigureDialog), { ssr: false })
@@ -150,7 +151,7 @@ import { besidePropertiesRight, propertiesSurfaceClass } from './layout/properti
 import type { ViewDisplay } from './views-sheets/ViewPropertiesPanel'
 import { newViewDisplay, useViewDisplayPrefsFrom } from './views-sheets/use-view-display-prefs'
 import { useViewCameraMemoryFrom } from './views-sheets/use-view-camera-memory'
-import { cameraMemoryKey, framingSignature } from './views-sheets/view-camera-memory'
+import { CameraPlacement, cameraMemoryKey, framingSignature } from './views-sheets/view-camera-memory'
 import { FREE_3D_KEY } from '../contracts/building-model/view-camera-prefs'
 import { VIEW_TYPE_LABEL, newId, type CreatableViewType, type OpenItem, type SubmitCommand } from './views-sheets/types'
 import { useSheetImagesFrom } from '@permitzip/bim-editor/editor/views-sheets/use-sheet-images'
@@ -181,6 +182,7 @@ import { useWorkingAngle } from './orientation/use-working-angle'
 import { movableOriginPoint, type OriginMoveMode } from './coordinates'
 import type { LevelRequest } from './levels/LevelTools'
 import { ToolHintBar } from './ToolHintBar'
+import { SelectionLocksBar } from './SelectionLocksBar'
 import { proposedSystemName } from './system-name'
 import { runCreateSimilar, useCreateSimilar } from './create-similar'
 import { ToolReadinessNotice } from './ToolReadinessNotice'
@@ -217,9 +219,6 @@ const ORGANIZATION_ZONES: ReadonlySet<string> = new Set([ORGANIZATION_ZONE])
 export type BuildingModelView = '3d' | 'plan' | 'sheet'
 
 export type { BuildingModelTool } from './building-model-ribbon'
-
-/** Space the properties panel takes on the right of the canvas (w-80), so overlays clear it. */
-const PROPERTIES_PANEL_PX = 320
 
 /** Keys typed into a field are the field's, not the view's. */
 function typingInField(target: EventTarget | null): boolean {
@@ -314,7 +313,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const cameraMemory = useViewCameraMemoryFrom(host.data.viewPrefs, projectId)
   /** The person picked live model or printed drawing since this view opened (their saved choice arriving late must not undo it). */
   const displayChosenRef = useRef(false)
-  const [sectionTool, setSectionTool] = useState(false)
+  const [verticalViewTool, setVerticalViewTool] = useState<'section' | 'elevation' | null>(null)
   const [request, setRequest] = useState<PanelRequest | null>(null)
   /** Sheets › Project info, open over whatever else is open (the sheet dialog keeps what was typed). */
   const [projectInfoOpen, setProjectInfoOpen] = useState(false)
@@ -354,6 +353,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const [coordinationOpen, setCoordinationOpen] = useState(false)
   /** Tag styles open: on which style, previewed on which element. */
   const [tagStylesOpen, setTagStylesOpen] = useState<{ readonly styleId: string | null; readonly sampleElementId: string | null } | null>(null)
+  const [textStylesOpen, setTextStylesOpen] = useState(false)
   const [level, setLevel] = useState<string>('all')
   const [connection, setStatus] = useState<ConnectionStatus>('connecting')
   const [problem, setProblem] = useState<ConnectionProblem | null>(null)
@@ -662,7 +662,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   /** Every plan and section, so opening a sheet draws the architect's background from this tab. */
   const warmViews = useMemo(() => (documentsModel ? elementsOfKind(documentsModel.elements, 'view') : []), [documentsModel])
   useWarmViewBackgroundsFrom(host.data.viewBackgrounds, projectId, warmViews, (referenceList ?? config?.references ?? []).length > 0, backgroundLevels)
-  const drawingSection = sectionTool && planOpen
+  const drawingSection = verticalViewTool !== null && planOpen
   /** A 3D camera (the free model, a 3D view or a section's live model) fills the canvas. */
   const live3dOpen = !showDrawing && !planOpen && !(open.kind === 'model' && open.mode === 'plan')
   const livePlanOpen = !showDrawing && (planOpen || (open.kind === 'model' && open.mode === 'plan'))
@@ -726,6 +726,8 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   const shownCamera = useRef<{ readonly viewer: unknown; readonly key: string } | null>(null)
   // Where the Top-down plan was left, for this tab: it reopens there after other views.
   const topDownPlan = useRef(new TopDownPlanMemory())
+  // A settle while a placement is still running says where the camera was, not where this person is.
+  const cameraPlacing = useRef(new CameraPlacement())
   // Read before the canvas resizes under the drawing and the viewer re-fits the plan beneath it.
   useLayoutEffect(() => {
     if (viewer && showDrawing && shownCamera.current?.viewer === viewer) topDownPlan.current.coveredByDrawing(viewer, shownCamera.current.key)
@@ -757,21 +759,26 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       viewer.setAuthoredLevels(shown.levels)
       if (view.viewType === 'floor_plan' || view.viewType === 'ceiling_plan') {
         await viewer.setVerticalSection(null)
+        if (cancelled) return
         await viewer.isolateLevel(props.level ?? null)
+        if (cancelled) return
         const cut = livePlanCutMm(current, view, floor)
         viewer.setMode('plan', cut)
         viewer.setPlanCut(cut)
         await viewer.framePlanRect(view.cropMin, view.cropMax, { animate: false })
         // Crop view on: the live model is cut at the crop box too, as it prints.
         if (!cancelled) viewer.setPlanCrop(props.cropView === false ? null : { min: view.cropMin, max: view.cropMax })
-      } else if (view.viewType === 'section' && props.section) {
+      } else if ((view.viewType === 'section' || view.viewType === 'elevation') && props.section) {
         await viewer.isolateLevel(null)
+        if (cancelled) return
         await viewer.setVerticalSection({ ...props.section, eyeElevationMm: floor + 1600 })
       } else if (view.viewType === 'three_d') {
         await viewer.setVerticalSection(null)
+        if (cancelled) return
         viewer.setMode('3d')
         viewer.setPlanCrop(null)
         await viewer.isolateLevel(props.level ?? null)
+        if (cancelled) return
         // The 3D crop box itself is applied by useCrop3d.
         // Where this person left this view last, else the view's own camera (what prints).
         const camera = cameraFor(view.id) ?? viewCamera3d(current, view)
@@ -779,9 +786,12 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         else await viewer.framePlanRect(view.cropMin, view.cropMax)
       }
     }
+    const placementToken = cameraPlacing.current.start()
     void run().catch((err: unknown) => {
       console.error('[BuildingModelSurface] opening the view in the canvas failed', { cameraKey, err })
       toast.error("The view couldn't be shown in the canvas. Its printed drawing is still available.")
+    }).finally(() => {
+      cameraPlacing.current.finish(placementToken)
     })
     return () => {
       cancelled = true
@@ -794,6 +804,11 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   useEffect(() => {
     if (!viewer || !cameraRememberKey || !cameraMemory.loaded) return
     return viewer.onCameraSettled(() => {
+      // Opening a view moves the camera in steps: a settle that lands while the placement is still
+      // running says where the camera was before the view opened (the previous view's position),
+      // not where this person is — remembering it would make the view open at the previous view's
+      // camera from then on.
+      if (cameraPlacing.current.inFlight) return
       const camera = viewer.camera3dState()
       if (camera) rememberCamera(cameraRememberKey, camera)
     })
@@ -932,7 +947,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       const view = item.kind === 'view' ? index?.views.find((v) => v.id === item.id) : undefined
       displayChosenRef.current = display !== undefined
       setViewDisplay(display ?? (view ? viewDisplayPrefs.displayFor(view) : 'model'))
-      setSectionTool(false)
+      setVerticalViewTool(null)
       // Equipment picked on a live diagram stays picked in the plan or 3D (and the other way): the diagram is the model.
       if (!view?.props?.diagram && !from?.props?.diagram) setSelection(null)
       setPlaceLevel(null)
@@ -1111,21 +1126,25 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
     </ModelFromStore>
   )
 
-  const startSection = useCallback(() => {
-    if (planOpen) {
-      setSectionTool(true)
-      return
-    }
-    const plan = index?.views.find((v) => v.viewType === 'floor_plan')
-    if (plan) {
-      openItem({ kind: 'view', id: plan.id })
-      setSectionTool(true)
-      toast(`Opened ${plan.name}. Drag across it where the section cuts.`)
-    } else {
-      toast('Sections are drawn on a floor plan. Make one first.')
-      setRequest({ kind: 'new_view', viewType: 'floor_plan' })
-    }
-  }, [planOpen, index, openItem])
+  const startVerticalView = useCallback(
+    (kind: 'section' | 'elevation') => {
+      if (planOpen) {
+        setVerticalViewTool(kind)
+        return
+      }
+      const plan = index?.views.find((v) => v.viewType === 'floor_plan')
+      if (plan) {
+        openItem({ kind: 'view', id: plan.id })
+        setVerticalViewTool(kind)
+        toast(kind === 'elevation' ? `Opened ${plan.name}. Drag across it where the elevation looks.` : `Opened ${plan.name}. Drag across it where the section cuts.`)
+      } else {
+        toast(kind === 'elevation' ? 'Elevations are placed on a floor plan. Make one first.' : 'Sections are drawn on a floor plan. Make one first.')
+        setRequest({ kind: 'new_view', viewType: 'floor_plan' })
+      }
+    },
+    [planOpen, index, openItem],
+  )
+  const startSection = useCallback(() => startVerticalView('section'), [startVerticalView])
 
   /** Open the live diagram of a kind, making it (one undoable view, no line work) when there is none yet or `forceNew`. */
   const openDiagram = useCallback(
@@ -1154,7 +1173,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         if (refusal) toast.error(refusal)
       } else if (r.kind === 'new_schedule') setListScheduleFor('mechanical_equipment')
       else if (r.kind === 'project_info') setProjectInfoOpen(true)
-      else if (r.kind === 'new_view' && r.viewType === 'section') startSection()
+      else if (r.kind === 'new_view' && (r.viewType === 'section' || r.viewType === 'elevation')) startVerticalView(r.viewType)
       else if (r.kind === 'duplicate_view') {
         const id = newId('view')
         const refusal = submitWithUndo({ type: 'duplicate_view', viewId: r.view.id, newViewId: id }, `duplicate ${r.view.name}`)
@@ -1162,7 +1181,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         else openItem({ kind: 'view', id })
       } else setRequest(r)
     },
-    [startSection, submitWithUndo, openItem, openDiagram],
+    [startVerticalView, submitWithUndo, openItem, openDiagram],
   )
 
   const downAt = useRef<{ x: number; y: number } | null>(null)
@@ -2041,7 +2060,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       if (showDrawing) return
       if (tool === 'select' && session && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const ids = selection?.kind === 'group' ? selection.ids : selection?.kind === 'authored' ? [selection.element.id] : []
-        if (ids.length > 0 && isNudgeKey(e.key)) {
+        if (ids.length > 0 && !e.defaultPrevented && isNudgeKey(e.key)) {
           e.preventDefault()
           setToolHint(session.nudgeSelection(ids, e.key, e.shiftKey))
           return
@@ -2241,12 +2260,13 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       const plan = openView
       const id = newId('view')
       const props = plan?.props ?? {}
+      const kind = verticalViewTool ?? 'section'
       const refusal = submitWithUndo(
         {
           type: 'create_view',
           viewId: id,
           name,
-          viewType: 'section',
+          viewType: kind,
           props: {
             section: cut,
             scale: props.scale ?? 48,
@@ -2257,12 +2277,12 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
         `create ${name}`,
       )
       if (!refusal) {
-        setSectionTool(false)
-        toast(`${name} created. It's in the panel under Sections; click its cut line to open it.`)
+        setVerticalViewTool(null)
+        toast(kind === 'elevation' ? `${name} created. It's in the Views browser under Elevations; click its mark to open it.` : `${name} created. It's in the Views browser under Sections; click its cut line to open it.`)
       }
       return refusal
     },
-    [openView, submitWithUndo, levelElevations],
+    [openView, verticalViewTool, submitWithUndo, levelElevations],
   )
 
   /** The orientation controls' "elevation from here": a section just outside the model on the camera's side, looking across all of it. */
@@ -2278,11 +2298,11 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       let name = title
       for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${title} ${n}`
       const id = newId('view')
-      const refusal = submitWithUndo({ type: 'create_view', viewId: id, name, viewType: 'section', props: { section: elevationCut(side, rect), scale: 48 } }, `create ${name}`)
+      const refusal = submitWithUndo({ type: 'create_view', viewId: id, name, viewType: 'elevation', props: { section: elevationCut(side, rect), scale: 48 } }, `create ${name}`)
       if (refusal) toast.error(refusal)
       else {
         openItem({ kind: 'view', id })
-        toast(`${name} created. It's in the panel under Sections.`)
+        toast(`${name} created. It's in the Views browser under Elevations.`)
       }
     },
     [index, submitWithUndo, openItem],
@@ -2351,7 +2371,14 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
   }
   const saveLabel: SaveLabel = save.retrying > 0 || save.message ? 'not_saved' : save.pending > 0 ? 'saving' : 'saved'
   const sectionsOnPlan = useMemo(
-    () => (planOpen && openView ? (index?.views ?? []).filter((v) => v.viewType === 'section' && (v.props?.level ?? null) === (openView.props?.level ?? null)) : []),
+    () =>
+      planOpen && openView
+        ? (index?.views ?? []).filter(
+            (v) =>
+              (v.viewType === 'section' || v.viewType === 'elevation') &&
+              (!v.props?.level || !openView.props?.level || v.props.level === openView.props.level),
+          )
+        : [],
     [planOpen, openView, index],
   )
   const backSheet = returnSheet && open.kind === 'view' ? (index?.sheets.find((s) => s.id === returnSheet) ?? null) : null
@@ -2862,7 +2889,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
     tagAll,
     request: onPanelRequest,
     sectionDrawing: drawingSection,
-    toggleSection: () => (drawingSection ? setSectionTool(false) : startSection()),
+    toggleSection: () => (drawingSection ? setVerticalViewTool(null) : startSection()),
     planOpen,
     openModel: (mode) => openItem({ kind: 'model', mode }),
     crop:
@@ -3426,16 +3453,17 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
           />
           {planOpen && viewer && openView && (
             <SectionCutOverlay
-              key={drawingSection ? 'drawing' : 'marks'}
+              key={verticalViewTool ?? 'marks'}
               viewer={viewer}
               elevationMm={openFloorMm + (openView.props?.cutHeightMm ?? 1219.2)}
               drawing={drawingSection}
+              kind={verticalViewTool ?? 'section'}
               sections={sectionsOnPlan}
-              suggestedName={nextSectionName(index?.views ?? [])}
+              suggestedName={verticalViewTool === 'elevation' ? nextElevationName(index?.views ?? []) : nextSectionName(index?.views ?? [])}
               onOpenSection={(id) => openItem({ kind: 'view', id })}
               onCreate={createSection}
-              onCancel={() => setSectionTool(false)}
-              onFarClip={canEdit ? (viewId, depthMm) => submitWithUndo({ type: 'set_view_crop', viewId, farClipMm: depthMm }, 'change how far the section sees') : undefined}
+              onCancel={() => setVerticalViewTool(null)}
+              onFarClip={canEdit ? (viewId, depthMm) => submitWithUndo({ type: 'set_view_crop', viewId, farClipMm: depthMm }, 'change how far the view sees') : undefined}
             />
           )}
           {viewer && model && !showDrawing && (showOrigin || pickingNorth) && (
@@ -3508,7 +3536,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
             <OrientationControls
               trueNorthDeg={site.trueNorthDeg}
               viewer={viewer}
-              rightInset={openView || selection ? PROPERTIES_PANEL_PX : 0}
+              rightInset={propertiesOpen ? propertiesWidth : 0}
               canCreateViews={canEdit}
               blockedReason={blockedReason}
               onCreatePlan={() => setRequest({ kind: 'new_view', viewType: 'floor_plan' })}
@@ -3550,6 +3578,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                   openItem({ kind: 'view', id })
                   setReturnSheet(from)
                 }}
+                onOpenSheet={(sheetId) => openItem({ kind: 'sheet', id: sheetId })}
                 onEditSheet={openSheet ? () => setRequest({ kind: 'edit_sheet', sheet: openSheet }) : undefined}
                 tool={drawingTool}
                 onToolChange={setDrawingTool}
@@ -3598,6 +3627,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
                       hostLevelId={viewLevelId}
                       levelName={model ? (canonicalViewLevel(model, openView.props?.level) ?? null) : null}
                       phaseFields={viewPhaseFields(openView)}
+                      onOpenTextStyles={() => setTextStylesOpen(true)}
                       schedule={workflows.viewProperties(openView)}
                       diagram={
                         openView.props?.diagram ? (
@@ -3700,7 +3730,7 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
             </div>
           )}
           {status === 'read_only' && !phase && !showDrawing && (
-            <div className="absolute bottom-3 left-3 max-w-sm">
+            <div className="absolute bottom-14 left-3 max-w-sm">
               <Alert>
                 <Wind />
                 <AlertTitle>View only</AlertTitle>
@@ -3934,9 +3964,30 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
           )}
         </div>
       </div>
-      <ModelFromStore store={modelStore} zones={ORGANIZATION_ZONES}>
-        {(shown) => <OrganizationStatusBar model={shown} canEdit={canEdit} blockedReason={blockedReason} submit={submitWithUndo} onRefused={(message) => toast.error(message)} />}
-      </ModelFromStore>
+      <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-t bg-background px-3 text-xs">
+        <ModelFromStore store={modelStore} zones={ORGANIZATION_ZONES}>
+          {(shown) => <OrganizationStatusBar model={shown} canEdit={canEdit} blockedReason={blockedReason} submit={submitWithUndo} onRefused={(message) => toast.error(message)} />}
+        </ModelFromStore>
+        {!scheduleGridOpen && (
+          <SelectionLocksBar
+            viewer={viewer}
+            is3d={!showDrawing && !planOpen}
+            hasSelection={selectedIds.length > 0}
+            selectionLocked={selectedIds.length > 0 && selectedIds.every((id) => lockOf(model?.elements[id]) !== null)}
+            canEdit={canEdit}
+            onTogglePin={() => {
+              if (!model || selectedIds.length === 0) return
+              const allLocked = selectedIds.every((id) => lockOf(model.elements[id]) !== null)
+              submitWithUndo(
+                allLocked
+                  ? { type: 'unlock_elements', elementIds: [...selectedIds] }
+                  : { type: 'lock_elements', elementIds: [...selectedIds], state: 'existing', reason: 'Pinned by user' },
+                allLocked ? 'Unpin selection' : 'Pin selection',
+              )
+            }}
+          />
+        )}
+      </div>
       {organizationDialog !== null && (
         <ModelFromStore store={modelStore}>
           {(shown) =>
@@ -3961,6 +4012,11 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       {tagStylesOpen && (
         <ModelFromStore store={modelStore}>
           {(shown) => shown && <TagStylesDialog model={shown} canEdit={canEdit} blockedReason={blockedReason} submit={submitWithUndo} initialStyleId={tagStylesOpen.styleId} sampleElementId={tagStylesOpen.sampleElementId} onClose={() => setTagStylesOpen(null)} />}
+        </ModelFromStore>
+      )}
+      {textStylesOpen && (
+        <ModelFromStore store={modelStore}>
+          {(shown) => shown && <TextStylesDialog model={shown} canEdit={canEdit} blockedReason={blockedReason} submit={submitWithUndo} onClose={() => setTextStylesOpen(false)} />}
         </ModelFromStore>
       )}
       {partEditor && (
@@ -4026,12 +4082,12 @@ export function BuildingModelSurface({ projectId, projectName, projectNumber, us
       ) : null}
       <DeleteConfirmDialog pending={pendingDelete} onClose={() => setPendingDelete(null)} onConfirm={confirmDelete} />
 
-      {request?.kind === 'new_view' && request.viewType !== 'section' && (
+      {request?.kind === 'new_view' && request.viewType !== 'section' && request.viewType !== 'elevation' && (
         <NewViewDialog
           viewType={request.viewType}
           levels={planLevels}
           onCancel={() => setRequest(null)}
-          onCreate={(input) => createView(request.viewType === 'section' ? 'floor_plan' : request.viewType, input)}
+          onCreate={(input) => createView(request.viewType === 'section' || request.viewType === 'elevation' ? 'floor_plan' : request.viewType, input)}
         />
       )}
       {(request?.kind === 'new_sheet' || request?.kind === 'edit_sheet') && (
@@ -4280,6 +4336,15 @@ function nextSectionName(views: readonly ViewElement[]): string {
     if (!taken.has(name.toLowerCase())) return name
   }
   return `Section ${views.length + 1}`
+}
+
+function nextElevationName(views: readonly ViewElement[]): string {
+  const taken = new Set(views.map((v) => v.name.toLowerCase()))
+  for (let n = 1; n < 100; n++) {
+    const name = `Elevation ${n}`
+    if (!taken.has(name.toLowerCase())) return name
+  }
+  return `Elevation ${views.length + 1}`
 }
 
 

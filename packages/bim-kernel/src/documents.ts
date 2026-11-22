@@ -22,7 +22,12 @@ import type { TitleBlockRow } from "./drawing/title-block-definition";
  * is in paper millimetres, origin top-left, y down.
  */
 
-export type ViewType = "floor_plan" | "ceiling_plan" | "section" | "three_d" | "schedule" | "detail";
+export type ViewType = "floor_plan" | "ceiling_plan" | "section" | "elevation" | "three_d" | "schedule" | "detail";
+
+/** Vertical orthographic views (sections and elevations share the same projection plane and far clip). */
+export function isVerticalView(viewType: ViewType): boolean {
+  return viewType === "section" || viewType === "elevation";
+}
 
 /** Categories a view can switch off. Linked models are switched per reference in `references`. */
 export const VIEW_CATEGORIES = ["duct", "duct_fitting", "pipe", "air_terminal", "equipment", "walls", "doors_windows", "rooms", "grids", "structure", "tags", "dimensions", "electrical_devices", "lighting_fixtures", "electrical_equipment", "insulation"] as const;
@@ -83,6 +88,12 @@ export interface SectionCut {
   readonly direction: 1 | -1;
   /** How far beyond the cut line the section sees, in model mm. */
   readonly depthMm: number;
+  /** Extra annotative extension of the section head past `start` along -axis (model mm; independent of cut range). */
+  readonly headExtMm?: number;
+  /** Extra annotative extension of the section tail past `end` along +axis (model mm; independent of cut range). */
+  readonly tailExtMm?: number;
+  /** Revit split/broken section line: hides the middle dash across the interior of the plan while keeping head & tail stubs. */
+  readonly splitGap?: boolean;
 }
 
 /** Everything about a view a person can set; absent fields take the view type's default. */
@@ -112,8 +123,16 @@ export interface ViewProps extends ViewGraphicsHints {
   readonly linkedHiddenLines?: boolean;
   /** Drawings: linked furniture, fixtures and other small things narrower than this, mm, are left out. Absent: 0 (all drawn). */
   readonly linkedMinObjectMm?: number;
-  /** Coarse: duct and pipe single-line, no fitting bodies. Medium: double-line with fittings. Fine: adds turning vanes and joints. Absent: medium. */
+  /** Sections/elevations: annotative extension of level datum lines past the left crop edge (paper mm, default 8 mm). */
+  readonly levelLeftExtMm?: number;
+  /** Sections/elevations: annotative extension of level datum lines past the right crop edge (paper mm, default 8 mm). */
+  readonly levelRightExtMm?: number;
+  /** Coarse: all runs single-line with schematic fitting & rise/drop symbols. Medium: air runs double-line with fittings; other runs single-line schematic with fitting & rise/drop symbols. Fine: all runs double-line with fitting bodies and turning vanes. Absent: medium. */
   readonly detailLevel?: DetailLevel;
+  /** Plans: print repeating inline service codes (CW, SAN, G…) inside single-line runs when the service or system defines one. Absent: on. */
+  readonly showLineCodes?: boolean;
+  /** Plans: multiplier for annotative paper-space symbols and `minPaperMm` floors in this view (0.5–3.0). Absent: 1. */
+  readonly symbolScale?: number;
   /** Absent: hidden line. */
   readonly visualStyle?: VisualStyle;
   /** Draw edges hidden behind nearer elements dashed, for every category. Absent: off (hidden edges are removed). */
@@ -242,6 +261,10 @@ export interface Viewport {
   readonly scale: number;
   /** Print a north arrow beside the view title, turned to true north. Absent: on for plans, off for other views. */
   readonly northArrow?: boolean;
+  /** Optional paper-mm offset of the viewport title block (bubble, rule, title, scale, north arrow) from its default anchor below the viewport. */
+  readonly titleOffsetMm?: Vec2;
+  /** Optional explicit paper-mm length of the viewport title horizontal rule line (Revit draggable title bar end). */
+  readonly titleRuleMm?: number;
   /** Removed (kept so undo can bring it back). */
   readonly deleted?: boolean;
 }

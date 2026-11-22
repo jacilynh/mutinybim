@@ -11,7 +11,7 @@
 import { DEFAULT_SETTINGS, asRevision, gatedRecordFeatures, type ModelState } from "@permitzip/bim-kernel";
 import { defineScript, runScript, sliceModel, type ScriptDefinition } from "@permitzip/bim-script";
 import { PROTOCOL_FEATURES } from "@permitzip/bim-sync";
-import { danglingReferences, entityCounts, exportIfc, readStep, type ReadEntity, type StepFile } from "../src";
+import { danglingReferences, entityCounts, exportIfc, importIfc, readStep, type ReadEntity, type StepFile } from "../src";
 import { Log } from "../../bim-kernel/__tests__/a13a-fixtures";
 import electricalRoom from "../../bim-script/examples/electrical-room";
 import rooftopUnit from "../../bim-script/examples/rooftop-unit";
@@ -84,6 +84,19 @@ describe("small-office", () => {
     file = exported(await build(smallOffice));
   });
 
+  it("imports Level 2 at its original 12 ft elevation (#62)", async () => {
+    const model = await build(smallOffice);
+    const out = exportIfc({ model, project: PROJECT, timeStamp: TIME_STAMP });
+    const empty: ModelState = { ...model, modelId: "small-office-readback", elements: {}, connections: [] };
+    const back = importIfc(out.text, {
+      model: empty, referenceId: "ref", sourceKey: "small-office", sourceId: "v1",
+      label: "Small office", disciplines: ["architecture"],
+    });
+    const levels = back.records.filter((record) => record.kind === "level");
+    expect(levels).toHaveLength(2);
+    expect(levels.find((level) => level.name === "Level 2")?.elevationMm).toBeCloseTo(12 * FT, 6);
+  });
+
   it("writes each storey at its elevation, with its six walls in it", () => {
     const storeys = ofType(file, "IFCBUILDINGSTOREY").sort((a, b) => (num(a, 9) ?? 0) - (num(b, 9) ?? 0));
     expect(storeys.map((s) => text(s, 2))).toEqual(["Level 1", "Level 2"]);
@@ -119,6 +132,10 @@ describe("rooftop-unit", () => {
     const sections = ofType(file, "IFCDUCTSEGMENT").map((seg) => {
       const rep = get(file, refs(get(file, ref(seg, 6)), 2)[0]);
       const profile = get(file, ref(get(file, refs(rep, 3)[0]), 0));
+      expect(text(seg, 2)).toMatch(/ mm (Supply air|Return air)$/);
+      expect(psets(file, seg).Pset_DuctSegmentTypeCommon).toEqual({
+        NominalDiameterOrWidth: num(profile, 3), NominalHeight: num(profile, 4),
+      });
       return [num(profile, 3), num(profile, 4)];
     });
     // 4000 CFM at 12 in deep: wider than 20 in.
@@ -183,6 +200,37 @@ describe("electrical-room", () => {
 
   it("writes the parameters a script set on the board", () => {
     expect(Object.assign({}, ...Object.values(psets(file, board)))).toMatchObject({ "Panel name": "LP-1 synthetic", "Short-circuit rating": 22000 });
+  });
+
+  it.each(["unrated", "other-adapter"])("omits the electrical rating for %s links", async (mode) => {
+    const model = await build(electricalRoom);
+    const elements = Object.fromEntries(Object.entries(model.elements).map(([id, element]) => [
+      id, element.kind === "service_link" ? {
+        ...element,
+        ...(mode === "unrated" ? { electrical: undefined } : { adapter: "sample-other" }),
+      } : element,
+    ]));
+    const output = exported({ ...model, elements });
+    const circuits = ofType(output, "IFCDISTRIBUTIONCIRCUIT");
+    expect(circuits).toHaveLength(2);
+    for (const circuit of circuits) {
+      expect(psets(output, circuit).MutinyBIM_Circuit?.Rating).toBeUndefined();
+      expect(related(output, "IFCRELASSIGNSTOGROUP", 6, 4, circuit.id).length).toBeGreaterThan(1);
+    }
+  });
+
+  it("writes each stored 20 A circuit rating with an ampere unit (#64)", () => {
+    const circuits = ofType(file, "IFCDISTRIBUTIONCIRCUIT");
+    expect(circuits).toHaveLength(2);
+    for (const circuit of circuits) {
+      expect(psets(file, circuit).MutinyBIM_Circuit?.Rating).toBe(20);
+      const set = ofType(file, "IFCRELDEFINESBYPROPERTIES").filter((rel) => refs(rel, 4).includes(circuit.id))
+        .map((rel) => get(file, ref(rel, 5))).find((entry) => text(entry, 2) === "MutinyBIM_Circuit");
+      if (!set) throw new Error("Missing circuit properties");
+      const rating = refs(set, 4).map((id) => get(file, id)).find((entry) => text(entry, 0) === "Rating");
+      expect(rating?.args[2]).toEqual({ kind: "typed", type: "IFCELECTRICCURRENTMEASURE", value: { kind: "number", value: 20 } });
+    }
+    expect(ofType(file, "IFCSIUNIT").some((unit) => text(unit, 1) === "ELECTRICCURRENTUNIT" && text(unit, 3) === "AMPERE")).toBe(true);
   });
 
   it("writes one circuit per room, each grouping the board, and every outlet in one", () => {

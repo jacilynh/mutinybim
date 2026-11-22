@@ -10,12 +10,16 @@ import {
   partTypeDefinitionSchema,
   partTypeIssues,
   planeFrame,
+  refreshBuiltinPartTypes,
   resolveGeometry,
   localBounds,
   type ImportedBodyRef,
   type LibraryEntry,
+  type RefreshBuiltinPartTypesOptions,
+  type RefreshBuiltinPartTypesResult,
   type PartConnector,
   type PartFeature2,
+  type PartHostingMode,
   type PartModel2,
   type PartProfile,
   type PartSymbol,
@@ -23,6 +27,7 @@ import {
   type PlaneAxis,
   type ReferencePlane,
   type Sketch,
+  type SymbolPrimitive,
 } from "@permitzip/bim-kernel";
 import { measureIn, type Measure } from "@permitzip/bim-units";
 import type { ScriptContext } from "./context";
@@ -200,6 +205,8 @@ export interface PartStart {
   /** One of the kernel's part categories. */
   readonly category: (typeof PART_CATEGORIES)[number];
   readonly description?: string;
+  /** Optional placement hosting rule: `"wall_face"` snaps flush onto wall finish faces (+Y into room) and auto-rotates on hover/drag. */
+  readonly hosting?: PartHostingMode;
   /** What a tag shows, in order: parameter names, or "mark" / "type_name". */
   readonly tagFields?: readonly string[];
 }
@@ -294,6 +301,7 @@ export class PartBuilder {
   private readonly profiles: PartProfile[] = [];
   private readonly features: PartFeature2[] = [];
   private readonly symbols: PartSymbol[] = [];
+  private readonly planSymbols: SymbolPrimitive[] = [];
   private readonly clearances: NonNullable<PartTypeDefinition["clearances"]> = [];
   private envelope: { readonly length: Dim; readonly width: Dim; readonly height: Dim; readonly x: Dim; readonly y: Dim; readonly base: Dim } | null = null;
   private counter = 0;
@@ -732,19 +740,79 @@ export class PartBuilder {
   }
 
   /**
-   * Lines drawings use instead of the solid at some detail levels: a coarse
-   * plan rectangle with an X, a fine outline with its sections. At a level
-   * with no symbol for the view, drawings show the solid seen from that side.
+   * Lines, shapes, fills, masks, and text drawings use instead of the solid at
+   * some detail levels: a paper-scaled schematic symbol (`units: "paper"`,
+   * `mask: true`), a coarse plan rectangle with an X, or a shaded emergency
+   * indicator (`filled: true`). At a level with no symbol for the view,
+   * drawings show the solid seen from that side.
    */
-  symbol(levels: DetailLevel | readonly DetailLevel[], draw: { readonly shapes?: readonly Profile[]; readonly lines?: readonly (readonly [readonly [Length, Length], readonly [Length, Length]])[] }, view: "plan" | "below" = "plan"): this {
-    const s = this.sketchOn("base", `${view} symbol`);
-    for (const p of draw.shapes ?? []) {
-      this.shape(s, p.outline, 0, 0);
-      for (const h of p.holes) this.shape(s, h, 0, 0);
+  symbol(
+    levels: DetailLevel | readonly DetailLevel[],
+    draw: {
+      readonly shapes?: readonly Profile[];
+      readonly lines?: readonly (readonly [readonly [Length, Length], readonly [Length, Length]])[];
+      readonly texts?: readonly { readonly at: readonly [Length, Length]; readonly text: string; readonly heightMm?: number; readonly anchor?: "start" | "middle" | "end" }[];
+      /** "model" (default) or "paper" (annotative paper mm, scaled automatically by the view's scale). */
+      readonly units?: "model" | "paper";
+      /** Minimum plotted paper span (mm) when `units` is "model": draws true physical size when larger, scales up uniformly around (0, 0) when zoomed out. */
+      readonly minPaperMm?: number;
+      readonly pen?: "thin" | "medium" | "wide" | "heavy";
+      /** Solid black fill on closed shapes (e.g. half-switched or emergency indicators). */
+      readonly filled?: boolean;
+      /** Opaque white mask behind the symbol so background lines and wires never bleed through. */
+      readonly mask?: boolean;
+    },
+    view: "plan" | "below" = "plan",
+  ): this {
+    const hasGeom = (draw.shapes?.length ?? 0) > 0 || (draw.lines?.length ?? 0) > 0;
+    const hasTexts = (draw.texts?.length ?? 0) > 0;
+    if (!hasGeom && !hasTexts) throw new PartBuildError("A symbol needs shapes, lines, or texts.");
+    let sketchId: string | undefined;
+    if (hasGeom) {
+      const s = this.sketchOn("base", `${view} symbol`);
+      for (const p of draw.shapes ?? []) {
+        this.shape(s, p.outline, 0, 0);
+        for (const h of p.holes) this.shape(s, h, 0, 0);
+      }
+      for (const [a, b] of draw.lines ?? []) this.line(s, this.point(s, mm(a[0], "Line"), mm(a[1], "Line")), this.point(s, mm(b[0], "Line"), mm(b[1], "Line")));
+      sketchId = s.id;
     }
-    for (const [a, b] of draw.lines ?? []) this.line(s, this.point(s, mm(a[0], "Line"), mm(a[1], "Line")), this.point(s, mm(b[0], "Line"), mm(b[1], "Line")));
-    if (s.entities.length === 0) throw new PartBuildError("A symbol needs shapes or lines.");
-    this.symbols.push({ id: this.nextId("sy"), name: `${view} symbol`, view, detailLevels: typeof levels === "string" ? [levels] : [...levels], sketch: s.id });
+    const texts = draw.texts?.map((t) => ({
+      at: [mm(t.at[0], "Symbol text x"), mm(t.at[1], "Symbol text y")] as [Dim, Dim],
+      text: t.text,
+      heightMm: t.heightMm ?? 1.8,
+      ...(t.anchor !== undefined ? { anchor: t.anchor } : {}),
+    }));
+    this.symbols.push({
+      id: this.nextId("sy"),
+      name: `${view} symbol`,
+      view,
+      detailLevels: typeof levels === "string" ? [levels] : [...levels],
+      ...(sketchId !== undefined ? { sketch: sketchId } : {}),
+      ...(draw.units !== undefined ? { units: draw.units } : {}),
+      ...(draw.minPaperMm !== undefined ? { minPaperMm: draw.minPaperMm } : {}),
+      ...(draw.pen !== undefined ? { pen: draw.pen } : {}),
+      ...(draw.filled ? { filled: true } : {}),
+      ...(draw.mask ? { mask: true } : {}),
+      ...(texts && texts.length > 0 ? { texts } : {}),
+    });
+    return this;
+  }
+
+  /**
+   * Attach a registered symbol from `SYMBOL_POINT` (e.g. `"electrical.plan_gfci"`,
+   * `"electrical.plan_switch"`, `"electrical.plan_occ_sensor"`) at the chosen
+   * detail levels instead of drawing the solid.
+   */
+  symbolRef(levels: DetailLevel | readonly DetailLevel[], symbolId: string, view: "plan" | "below" = "plan"): this {
+    if (!symbolId.trim()) throw new PartBuildError("A symbol reference needs a non-empty symbolId.");
+    this.symbols.push({
+      id: this.nextId("sy"),
+      name: `${view} symbol (${symbolId})`,
+      view,
+      detailLevels: typeof levels === "string" ? [levels] : [...levels],
+      symbolId,
+    });
     return this;
   }
 
@@ -831,6 +899,18 @@ export class PartBuilder {
   // -------------------------------------------------------------- finish
 
   /**
+   * Adds annotative or model-space 2D plan symbol primitives directly to the
+   * part type (`circle`, `rect`, `line`, `arc`, `polyline`, `text`), with full
+   * support for `units: "paper"`, `minPaperMm`, `fill: "mask" | "solid"`,
+   * `when` parameter conditions, `mask: true` text wipeouts, and `upright` /
+   * `uprightOffset` wall-safe orientation.
+   */
+  planSymbol(primitives: readonly SymbolPrimitive[]): this {
+    for (const p of primitives) this.planSymbols.push(p);
+    return this;
+  }
+
+  /**
    * The kernel's part-type definition, checked with the kernel's schema and
    * part rules (the words a save would refuse with). Connector placement
    * warnings come back beside it, as the part editor shows them.
@@ -863,19 +943,20 @@ export class PartBuilder {
       profiles: [...this.profiles],
       features: [...this.features],
       symbols: [...this.symbols],
-      planDisplay: this.symbols.some((s) => s.view === "plan") ? "symbol" : "model",
+      planDisplay: this.symbols.some((s) => s.view === "plan") || this.planSymbols.length > 0 ? "symbol" : "model",
       types: [],
     };
     return partDefinition(this.name, {
       typeName: this.start.type,
       category: this.start.category,
       ...(this.start.description ? { description: this.start.description } : {}),
+      ...(this.start.hosting ? { hosting: this.start.hosting } : {}),
       typeParams: this.typeParams,
       typeValues: this.typeValues,
       instanceParams: [...this.instanceParams],
       connectors: [...connectors],
       geometry: [],
-      symbol: [],
+      symbol: [...this.planSymbols],
       tagFields: [...(this.start.tagFields ?? ["mark", "type_name"])],
       source: { kind: "script" },
       ...(this.features.length > 0 ? { model } : {}),
@@ -893,6 +974,16 @@ export const parts = {
   starterTypes(ctx: ScriptContext, words?: string): readonly LibraryEntry[] {
     const key = words?.trim().toLowerCase();
     return onWorking(ctx, "parts.starterTypes", () => builtinPartTypes().filter((e) => !key || `${e.id} ${e.definition.familyName} ${e.definition.typeName} ${e.definition.category}`.toLowerCase().includes(key)));
+  },
+  /**
+   * Upgrade stale built-in `part_type` definitions pinned in an existing model to
+   * the current library symbols (`mode: "symbols"`, default) or full definitions
+   * (`mode: "full"`), as one atomic edit. Returns the refreshed types.
+   */
+  refreshBuiltins(ctx: ScriptContext, opts: RefreshBuiltinPartTypesOptions = {}): RefreshBuiltinPartTypesResult["updated"] {
+    const res = onWorking(ctx, "parts.refreshBuiltins", (model) => refreshBuiltinPartTypes(model, opts));
+    if (res.command) ctx.edit(res.command);
+    return res.updated;
   },
   /** Start one size of a part: `parts.part("Plenum", { type: "24x12", category: "duct_accessory" })`. */
   part: (name: string, start: PartStart): PartBuilder => new PartBuilder(name, start),

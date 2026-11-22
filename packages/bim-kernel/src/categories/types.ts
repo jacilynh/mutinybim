@@ -1,4 +1,4 @@
-import type { CategoryLineWeights } from "../documents";
+import type { CategoryLineWeights, DetailLevel } from "../documents";
 import type { ClassDiscipline } from "../registry/types";
 
 /**
@@ -45,9 +45,22 @@ export interface CategoryOverride {
   readonly maskBeneath?: boolean;
   /** 0 opaque … 1 invisible. May be unread in this release. */
   readonly transparency?: number;
+  /** Override the view's detail level for this category or service (coarse = single-line schematic, medium = default double/single mix, fine = double-line). */
+  readonly detailLevel?: DetailLevel;
+  /** Runs narrower than this nominal width (mm) draw single-line; runs at or above draw double-line. 0 forces double-line regardless of size. */
+  readonly singleLineBelowMm?: number;
 }
 
 export type CategoryOverrides = Readonly<Record<CategoryId, CategoryOverride>>;
 
 /** The protocol feature a peer must advertise before a writer stores `categoryOverrides` on a view. */
 export const CATEGORY_OVERRIDES_FEATURE = "graphics:category_overrides";
+
+/** The protocol feature a peer must advertise before a writer stores per-category `detailLevel` / `singleLineBelowMm`, `ViewProps.showLineCodes`, or `SystemGraphics.lineCode`. */
+export const VIEW_SCHEMATIC_DETAIL_FEATURE = "graphics:view_schematic_detail";
+
+/** The protocol feature a peer must advertise before a writer stores `ViewProps.symbolScale`. */
+export const VIEW_SYMBOL_SCALE_FEATURE = "graphics:symbol_scale";
+
+/** The protocol feature a peer must advertise before a writer stores multi-vertex spline waypoints, arc flips, per-span hash-mark placement, or movable terminal arrow hints on a plan view. */
+export const VIEW_LINK_ROUTING_FEATURE = "graphics:link_routing";
