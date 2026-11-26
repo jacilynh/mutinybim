@@ -41,7 +41,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { ElicitResultSchema, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { canonicalJson, parseBranchModelId, type Command } from "@permitzip/bim-kernel";
-import { approvalIoFromRequest, createBimToolServer, familySlug, LOCAL_SCHEMAS, PACK_CONTROL_TOOL, parseKeptScript, readKeptScript, type ApprovalGate, type CoreSchemas, type BimToolHost, type ResolveBimCaller, type ScriptPreviewStore, type ScriptRunnerHost, type ToolCallWrapper } from "@permitzip/bim-mcp";
+import { APPROVAL_BOX_WAIT_MS, approvalIoFromRequest, createBimToolServer, familySlug, LOCAL_SCHEMAS, PACK_CONTROL_TOOL, parseKeptScript, readKeptScript, type ApprovalGate, type CoreSchemas, type BimToolHost, type ResolveBimCaller, type ScriptPreviewStore, type ScriptRunnerHost, type ToolCallWrapper } from "@permitzip/bim-mcp";
 import { localCaller, localModelAccess, MemoryScriptLibrary, type LocalModelServer } from "@permitzip/bim-mcp/local";
 import { localToolPacks } from "@permitzip/bim-mcp-packs";
 import type { AgentEditResult, AgentSocketFactory } from "@permitzip/bim-sync";
@@ -184,7 +184,7 @@ async function readRaw(req: IncomingMessage, limit: number): Promise<string | nu
 interface RequestExtra {
   readonly _meta?: { readonly progressToken?: string | number };
   readonly sendNotification?: (notification: { method: string; params: Record<string, unknown> }) => Promise<void>;
-  readonly sendRequest?: (request: { method: string; params: Record<string, unknown> }, schema: typeof ElicitResultSchema) => Promise<unknown>;
+  readonly sendRequest?: (request: { method: string; params: Record<string, unknown> }, schema: typeof ElicitResultSchema, options?: { timeout?: number }) => Promise<unknown>;
 }
 
 function asExtra(value: unknown): RequestExtra {
@@ -425,7 +425,7 @@ export function createAssistantTools(options: AssistantToolsOptions): AssistantT
     const link = `${origin}/approvals/${item.id}`;
     if (elicitation?.url && extra.sendRequest) {
       extra
-        .sendRequest({ method: "elicitation/create", params: { mode: "url", elicitationId: item.id, url: link, message: `Approve or decline ${clientName}'s change to “${spec.modelName}” in MutinyBIM.` } }, ElicitResultSchema)
+        .sendRequest({ method: "elicitation/create", params: { mode: "url", elicitationId: item.id, url: link, message: `Approve or decline ${clientName}'s change to “${spec.modelName}” in MutinyBIM.` } }, ElicitResultSchema, { timeout: APPROVAL_BOX_WAIT_MS })
         .catch((err: unknown) => console.error("[mutinybim-web] asking the assistant to open the approval link failed", { err }));
     }
     const progressToken = extra._meta?.progressToken;

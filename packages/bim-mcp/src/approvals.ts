@@ -81,6 +81,13 @@ export const autoApproval: ApprovalGate = {
 const APPROVE_SCHEMA = { type: "object" as const, properties: { approve: { type: "boolean" as const, title: "Approve", description: "Land this change" } }, required: ["approve"] };
 
 /**
+ * How long the approval box in the person's assistant stays open. A person
+ * reads the change before answering, and may be away from the screen: the MCP
+ * library's 60 s request default threw away a "yes" given after a minute.
+ */
+export const APPROVAL_BOX_WAIT_MS = 10 * 60_000;
+
+/**
  * How a tool reaches the person from inside a call when it has only the
  * request (MCP elicitation over the request's own channel). A client that
  * can't ask answers "unsupported".
@@ -92,7 +99,7 @@ export function approvalIoFromRequest(extra: unknown): ApprovalIo {
       if (typeof send !== "function") return "unsupported";
       const { ElicitResultSchema } = await import("@modelcontextprotocol/sdk/types.js");
       try {
-        const answer = await (send as (r: unknown, s: typeof ElicitResultSchema) => Promise<{ action: string; content?: Record<string, unknown> }>)({ method: "elicitation/create", params: { message, requestedSchema: APPROVE_SCHEMA } }, ElicitResultSchema);
+        const answer = await (send as (r: unknown, s: typeof ElicitResultSchema, o: { timeout: number }) => Promise<{ action: string; content?: Record<string, unknown> }>)({ method: "elicitation/create", params: { message, requestedSchema: APPROVE_SCHEMA } }, ElicitResultSchema, { timeout: APPROVAL_BOX_WAIT_MS });
         return answer.action === "accept" && answer.content?.approve === true ? "approved" : "declined";
       } catch (err) {
         if (err instanceof Error && /elicitation/i.test(err.message)) return "unsupported";
