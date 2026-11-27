@@ -312,7 +312,7 @@ export class ScriptSandbox {
       if (!line.success) return { ok: false, code: "runner_error", message: "the script box's answer isn't a run result", ms: ms() };
       // The supervisor reports its child's out-of-memory kill as an exit by SIGKILL.
       if (!line.data.ok && line.data.code === "runner_error" && /exited SIGKILL/.test(line.data.message)) return { ok: false, code: "cap_memory", message: "the script used more memory than this server allows", ms: line.data.ms };
-      return toScriptRunResult(line.data, ms);
+      return toScriptRunResult(line.data, ms, request.slice);
     } finally {
       rmSync(requestFile, { force: true });
     }

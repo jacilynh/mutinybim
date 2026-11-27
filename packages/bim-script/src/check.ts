@@ -1,3 +1,4 @@
+import { withModelStatePacks } from "@permitzip/bim-kernel/packs";
 import {
   PART_VIEWS,
   PartGeometryUnavailableError,
@@ -68,7 +69,8 @@ export type OutputCheck =
 /** Checks a script's output (raw JSON from a runner, or the kit's own) against `model`. Never commits. */
 export function checkScriptOutput(model: ModelState, raw: unknown, options: CheckOptions = {}): OutputCheck {
   const features = new Set(options.features ?? []);
-  return withUpgradePolicy((f) => features.has(f), () => checkIn(model, raw, options));
+  return withModelStatePacks(model, () =>
+    withUpgradePolicy((f) => features.has(f), () => checkIn(model, raw, options)));
 }
 
 function checkIn(model: ModelState, raw: unknown, options: CheckOptions): OutputCheck {

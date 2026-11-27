@@ -1,3 +1,4 @@
+import { withModelStatePacks } from "@permitzip/bim-kernel/packs";
 import {
   RevisionGapError,
   applyChangeset,
@@ -825,7 +826,7 @@ export class SyncClient implements SyncAdapter {
     if (!this.confirmed || !view) {
       return { ok: false, error: { code: "invalid_value", message: "Not connected yet", elementIds: [] } };
     }
-    const refused = unsendable(command);
+    const refused = withModelStatePacks(view, () => unsendable(command));
     if (refused) {
       console.error("[bim-sync] refused an edit the server would not read", { type: command.type, refused });
       return { ok: false, error: { code: "invalid_value", message: refused, elementIds: [] } };

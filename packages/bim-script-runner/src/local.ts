@@ -83,6 +83,6 @@ export class LocalScriptRunner implements ScriptRunner {
       console.error("[script-runner] the supervisor's answer isn't a run result", { issues: line.error.issues.slice(0, 3) });
       return { ok: false, code: "runner_error", message: "the script runner's answer isn't a run result", ms: ms() };
     }
-    return toScriptRunResult(line.data, ms);
+    return toScriptRunResult(line.data, ms, request.slice);
   }
 }

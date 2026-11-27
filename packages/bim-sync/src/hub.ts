@@ -300,7 +300,7 @@ export class SyncHub {
   }
 
   private async dispatch(conn: HubConnection, raw: string): Promise<void> {
-    const read = readClientMessage(raw);
+    const read = withPackSet((this.modelId ? modelPackSet(this.modelId) : null) ?? activePackSet(), () => readClientMessage(raw));
     if (!read.ok) {
       this.sendTo(conn, messageErrorReply(read));
       return;

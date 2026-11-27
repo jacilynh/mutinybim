@@ -1,3 +1,4 @@
+import { withModelStatePacks } from "@permitzip/bim-kernel/packs";
 import { createHash } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -354,8 +355,9 @@ interface Checked {
 
 /** The run's output, checked and summarised; a refusal in words when it doesn't check out. */
 async function checked(helpers: ScriptToolHost, run: RunOnModel): Promise<Checked | { readonly stopped: Extract<ScriptRunResult, { ok: false }> } | { readonly refused: string }> {
-  if (!run.result.ok) return { stopped: run.result };
-  const output = parseScriptOutput(run.result.output);
+  const result = run.result;
+  if (!result.ok) return { stopped: result };
+  const output = withModelStatePacks(run.head, () => parseScriptOutput(result.output));
   if (output.kind === "part_types") await drawingEngine(helpers);
   const check = checkScriptOutput(run.head, output, { features: run.slice.features });
   if (output.kind === "part_types") return { output, check, change: partTypesChange(output), hash: outputHash(output) };
@@ -716,7 +718,7 @@ export function registerBimScriptTools(server: McpServer, helpers: ScriptToolHel
             const features = sliceFeatures(policy);
             if (checkedReads) body.reads = sliceSummary(sliceModel(session.model(), checkedReads, args.selection ?? [], features));
             if (args.output) {
-              const output = parseScriptOutput(args.output);
+              const output = withModelStatePacks(session.model(), () => parseScriptOutput(args.output));
               if (output.kind === "part_types") await drawingEngine(helpers);
               const check = checkScriptOutput(session.model(), output, { features });
               body.output = { status: check.ok ? "ok" : "has_issues", revision: session.revision(), checks: checkLines(check) };
@@ -1001,7 +1003,8 @@ type ApplyArgs = ModelArgs & { base_revision: number; output?: Record<string, un
 async function applyOutsideOutput(helpers: ScriptToolHelpers, extra: unknown, args: ApplyArgs, ask: (proposal: ApprovalProposal) => Promise<ToolResult | null>): Promise<ToolResult> {
   if (!args.provenance) return json({ status: "refused", message: "An output from an outside client needs provenance (script_hash, kit_version, client).", nothing_changed: true });
   if (args.approval !== "ask_every_time") return json({ status: "refused", message: "An outside client's output asks the person every time; call again with approval: ask_every_time.", nothing_changed: true });
-  const output = parseScriptOutput(args.output);
+  const output = await helpers.withModel(extra, args, async (session) =>
+    withModelStatePacks(session.model(), () => parseScriptOutput(args.output)));
   if (output.kind !== "edits") return json({ status: "refused", message: "Only edits land here; part types are saved by running their script with bim_run_script and bim_save_part_type.", nothing_changed: true });
   if (outputHash(output) !== args.output_hash) return json({ status: "refused", message: "output_hash isn't this output's hash.", nothing_changed: true });
   const [batch] = output.batches;
