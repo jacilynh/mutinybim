@@ -10,6 +10,7 @@
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { exportIfc, readStep, rootedEntities } from "@permitzip/bim-ifc";
 import type { BimElement, ModelState } from "@permitzip/bim-kernel";
 import { KIT_EXAMPLES, KIT_EXAMPLE_SOURCES } from "@permitzip/bim-script";
 import { runExample, type ExampleRun } from "../src/examples";
@@ -59,6 +60,44 @@ describe("examples: every showcase script runs through the core tools", () => {
     expect(ofKind(m, "view").some((v) => field<string>(v, "viewType") === "schedule")).toBe(true);
     expect(ofKind(m, "sheet").map((s) => field<string>(s, "number")).sort()).toEqual(["M-101", "M-601"]);
     expect(label).toMatch(/^RTU-1 \(4000 CFM\) with \d+x12 supply and return ducts at \d+ fpm$/);
+  }, 120_000);
+
+  it("rooftop-unit: IFC 4.3 preserves the typed duct segments and their air systems", async () => {
+    const { model } = await run("rooftop-unit");
+    const { text, report } = exportIfc({
+      model,
+      project: { id: "rooftop-unit", name: "Rooftop unit", number: "001" },
+      timeStamp: "2026-01-01T00:00:00Z",
+    });
+    const file = readStep(text);
+    const roots = rootedEntities(file);
+    const ducts = roots.filter((entity) => entity.type === "IFCDUCTSEGMENT");
+    const systems = roots.filter((entity) => entity.type === "IFCDISTRIBUTIONSYSTEM");
+    const assignments = [...file.entities.values()].filter((entity) => entity.type === "IFCRELASSIGNSTOGROUP");
+
+    expect(ducts).toHaveLength(4);
+    expect(systems.map((system) => system.name).sort()).toEqual(["Return air", "Supply air"]);
+
+    const sourceElements = Object.values(model.elements);
+    for (const system of systems) {
+      const source = sourceElements.find((element) =>
+        element.kind === "mep_system" && element.name === system.name);
+      if (!source) throw new Error(`No source system named ${system.name}`);
+      const expected = sourceElements
+        .filter((element) => element.kind === "run_segment" && element.systemId === source.id)
+        .map((element) => report.globalIds[element.id]);
+      expect(expected).toHaveLength(2);
+
+      // RelatedObjects lists members, and RelatingGroup points to the system.
+      const memberIds = assignments.flatMap(({ args }) => {
+        const members = args[4];
+        const group = args[6];
+        if (group?.kind !== "ref" || group.id !== system.id || members?.kind !== "list") return [];
+        return members.items.flatMap((member) => member.kind === "ref" ? [member.id] : []);
+      });
+      const assignedDucts = ducts.filter((duct) => memberIds.includes(duct.id));
+      expect(assignedDucts.map((duct) => duct.globalId).sort()).toEqual(expected.sort());
+    }
   }, 120_000);
 
   it("plumbing-riser: fixtures on two floors, a code-sized stack and sloped building drain, connected and tagged", async () => {
