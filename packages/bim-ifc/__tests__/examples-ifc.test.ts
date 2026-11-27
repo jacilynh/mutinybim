@@ -84,6 +84,29 @@ describe("small-office", () => {
     file = exported(await build(smallOffice));
   });
 
+  it("writes all six ceiling surfaces at their height and contains them in their spaces (#59)", () => {
+    const ceilings = ofType(file, "IFCCOVERING").filter((entry) => text(entry, 8) === "CEILING");
+    expect(ceilings).toHaveLength(6);
+    for (const ceiling of ceilings) {
+      expect(text(ceiling, 2)).toBeTruthy();
+      const placement = get(file, ref(ceiling, 5));
+      expect(placement.type).toBe("IFCLOCALPLACEMENT");
+      const representation = get(file, refs(get(file, ref(ceiling, 6)), 2)[0]);
+      expect(text(representation, 2)).toBe("SurfaceModel");
+      const shellModel = get(file, refs(representation, 3)[0]);
+      const shell = get(file, refs(shellModel, 0)[0]);
+      const face = get(file, refs(shell, 0)[0]);
+      const loop = get(file, ref(get(file, refs(face, 0)[0]), 0));
+      for (const id of refs(loop, 0)) {
+        const coordinates = get(file, id).args[0];
+        const z = coordinates?.kind === "list" ? coordinates.items[2] : null;
+        expect(z?.kind === "number" ? z.value : NaN).toBeCloseTo(9 * FT, 6);
+      }
+      const container = ofType(file, "IFCRELCONTAINEDINSPATIALSTRUCTURE").find((rel) => refs(rel, 4).includes(ceiling.id));
+      expect(container && get(file, ref(container, 5)).type).toBe("IFCSPACE");
+    }
+  });
+
   it("writes each storey at its elevation, with its six walls in it", () => {
     const storeys = ofType(file, "IFCBUILDINGSTOREY").sort((a, b) => (num(a, 9) ?? 0) - (num(b, 9) ?? 0));
     expect(storeys.map((s) => text(s, 2))).toEqual(["Level 1", "Level 2"]);

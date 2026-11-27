@@ -5,6 +5,8 @@ import {
   activeClassRegistry,
   activeServiceRegistry,
   gridAxisFamily,
+  ceilingHeightAtPoint,
+  ceilingForm,
   hostLineOf,
   hostVoidsOf,
   ifcRelationRowsFor,
@@ -507,7 +509,6 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
     const bag = new PropertyBag();
     let product: Product;
     let spaceHint: string | null = null;
-    let planned = false;
 
     if (el.kind === "part") {
       const type = partTypeOf(el);
@@ -515,7 +516,6 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
       const mark = el.mark.trim() || null;
       const name = mark ?? type?.definition.typeName ?? null;
       if (where.state === "planned") {
-        planned = true;
         spaceHint = where.spaceHint && spaceRefs.has(where.spaceHint) ? where.spaceHint : null;
         product = writeElement(el, cls, name, mark, null, null);
         bag.set("MutinyBIM_Placement", { kind: "text", name: "State", value: "PLANNED" });
@@ -572,6 +572,17 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
       const placement = geo.placement(frame, geo.turned({ x: el.position.x, y: el.position.y, z: sill }, angle));
       const body = el.width > 0 && el.height > 0 && depth > 0 ? geo.box({ x: -el.width / 2, y: -depth / 2, z: 0 }, { x: el.width / 2, y: depth / 2, z: el.height }) : null;
       product = writeElement(el, cls, el.mark.trim() || null, el.mark.trim() || null, placement, body, { OverallWidth: el.width, OverallHeight: el.height });
+    } else if (el.kind === "ceiling") {
+      const placement = geo.placement(frame, geo.axis({ x: 0, y: 0, z: 0 }));
+      const point = (p: { readonly x: number; readonly y: number }) => ({ ...p, z: ceilingHeightAtPoint(el, p) });
+      const body = ceilingForm(el) === "open_to_structure" ? null : geo.surface(el.outline.map(point), (el.holes ?? []).map((hole) => hole.map(point)));
+      if (!body) warn(ceilingForm(el) === "open_to_structure"
+        ? `${el.id}: its ceiling has no physical surface to write`
+        : `${el.id}: its ceiling boundary could not be written; check its outline and openings`);
+      const space = el.spaceId ? els[el.spaceId] : undefined;
+      const name = space?.kind === "space" ? `Ceiling ${space.number} ${space.name}` : "Ceiling";
+      product = writeElement(el, cls, name, null, placement, body);
+      spaceHint = el.spaceId ?? null;
     } else if (el.kind === "run_segment") {
       const placement = geo.placement(frame, geo.axis({ x: 0, y: 0, z: 0 }));
       const s = el.size;
@@ -603,7 +614,7 @@ export function exportIfc(opts: IfcExportOptions): IfcExportResult {
       const t = typicalMembers.get(typical.groupId) ?? { levelId, items: [] };
       t.items.push(product.ref);
       typicalMembers.set(typical.groupId, t);
-    } else containIn(levelId, planned ? spaceHint : null, product.ref);
+    } else containIn(levelId, spaceHint, product.ref);
     const groupName = ifcOrganizationProperties(model, el)?.group.name;
     if (groupName) push(groupMembers, groupName, product.ref);
   }

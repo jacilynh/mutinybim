@@ -83,6 +83,37 @@ export class GeometryWriter {
     return this.g.add("IFCPRODUCTDEFINITIONSHAPE", [$, $, list([rep])]);
   }
 
+  /** A planar surface with openings, preserving its stated elevations without adding thickness. */
+  surface(outline: readonly Vec3[], holes: readonly (readonly Vec3[])[] = []): StepRef | null {
+    const ring = (points: readonly Vec3[]) => {
+      const distinct = points.filter((p, i) => {
+        const previous = points[i - 1];
+        return !previous || Math.hypot(p.x - previous.x, p.y - previous.y, p.z - previous.z) > EPS;
+      });
+      const first = distinct[0];
+      const last = distinct[distinct.length - 1];
+      return first && last && Math.hypot(first.x - last.x, first.y - last.y, first.z - last.z) <= EPS ? distinct.slice(0, -1) : distinct;
+    };
+    const outer = ring(outline);
+    if (outer.length < 3) return null;
+    const bound = (points: readonly Vec3[], outside: boolean) => {
+      const area = points.reduce((sum, p, i) => {
+        const next = points[(i + 1) % points.length] ?? p;
+        return sum + p.x * next.y - next.x * p.y;
+      }, 0);
+      const ordered = (area > 0) === outside ? points : [...points].reverse();
+      const loop = this.g.add("IFCPOLYLOOP", [list(ordered.map((p) => this.point(p)))]);
+      return this.g.add(outside ? "IFCFACEOUTERBOUND" : "IFCFACEBOUND", [loop, bool(true)]);
+    };
+    const inner = holes.map(ring);
+    if (inner.some((points) => points.length < 3)) return null;
+    const face = this.g.add("IFCFACE", [list([bound(outer, true), ...inner.map((points) => bound(points, false))])]);
+    const shell = this.g.add("IFCOPENSHELL", [list([face])]);
+    const surface = this.g.add("IFCSHELLBASEDSURFACEMODEL", [list([shell])]);
+    const rep = this.g.add("IFCSHAPEREPRESENTATION", [this.body, str("Body"), str("SurfaceModel"), list([surface])]);
+    return this.g.add("IFCPRODUCTDEFINITIONSHAPE", [$, $, list([rep])]);
+  }
+
   private extrude(profile: StepRef, position: StepRef, depth: number): StepRef {
     return this.g.add("IFCEXTRUDEDAREASOLID", [profile, position, this.direction({ x: 0, y: 0, z: 1 }), real(depth)]);
   }
